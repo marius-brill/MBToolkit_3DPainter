@@ -5,7 +5,7 @@
 **Requires:** Adobe Substance 3D Painter 10.1+ (Python 3.11 / PySide6)  
 **License:** MIT
 
-A modular toolkit for Adobe Substance 3D Painter, with a dedicated **MBToolkit** top-level menu, individually switchable tools and no hard-coded installation paths.
+A modular toolkit for Adobe Substance 3D Painter, to improve on tools and add new ones to speed up workflows.
 
 > **Release status:** This initial package passes host-independent automated checks. The plugin has **not yet been smoke-tested inside Substance 3D Painter**. Painter API and UI integration require validation on the exact installed Painter releases before a production release. Painter 10.1+ is the intended baseline, **not** a tested compatibility guarantee.
 
