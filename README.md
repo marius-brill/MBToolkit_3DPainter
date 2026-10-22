@@ -56,7 +56,7 @@ Copy **`painter_python/plugins/MBToolkit_3DPainter/`** (the folder containing `_
 1. Open **MBToolkit → Preferences → Features** to enable or disable tools.
 2. Open **MBToolkit → Pie Menus → Manage Pie Menus** to create/reorder wheels, add registered actions, and assign shortcuts. Shortcuts do not have a default value to avoid unknown native conflicts.
 3. Open **MBToolkit → Channel Blending** with one paint or fill layer selected.
-4. Open **MBToolkit → Font Tool**, enter text and choose **Create paintable text**. Paint on the selected layer content using your brush color/material. Paint broadly enough to cover future lettering. Select the paint layer (or its text mask Fill effect), choose **Load selected text mask**, edit, then **Update selected text mask**. Paint and mask projection remain separate. If a layer has several font mask effects, select the specific effect. Older Base Color text fill layers remain unchanged and are not converted by this workflow.
+4. Open **MBToolkit → Font Tool**, choose **Prepare text area**, and paint a broad patch on the layer content. Enter text, choose a font, select the paint layer and click **Fit to painted area**. Existing text masks load automatically when selected; edit and click **Update text**. If a layer has several font mask effects, select the specific effect. Older Base Color text fill layers remain unchanged and are not converted by this workflow.
 5. Under **Preferences → Python Actions**, save a local `.py` file and explicitly enable trusted custom actions. Reopen the Pie Menu Editor to assign it.
 
 Settings are stored outside the installation in the OS-specific Painter user configuration directory (via Qt `QStandardPaths`). Use Preferences to export or import portable JSON.
@@ -66,7 +66,10 @@ Settings are stored outside the installation in the OS-specific Painter user con
 Choose **Prepare text area**, paint a broad patch on the new layer's content, select that layer,
 then choose **Fit text to painted area**. This attaches an editable text mask to the existing paint,
 centers a square text source in the patch's UV bounding box with 10% padding, and enables automatic font sizing.
-Text can subsequently be edited with **Load selected text mask / Update selected text mask**.
+Select the text layer or its mask Fill effect to load settings automatically, then edit and click **Update text**.
+Ordinary model events do not reload the same selected mask or overwrite pending text edits.
+Disable **Auto fit** to use the logarithmic manual-size slider and precise numeric field; click **Update text** to apply.
+Alignment and spacing are under the collapsed **Advanced** section. Help is available in tooltips.
 
 This is UV-space placement, not a 3D viewport center or a guarantee of fitting inside irregular strokes.
 Use one continuous patch away from seams and tile edges. The initial implementation only accepts an
@@ -75,6 +78,18 @@ It temporarily isolates the layer and exports Base Color alpha at 512px, restore
 and deletes the temporary export. No persistent image cache is created. Empty/full-tile coverage is rejected.
 The exported alpha and projection positioning require in-Painter validation before this feature is considered verified.
 Fit refuses existing masks rather than overwriting them; it is an initial-placement action, not a repeated refit.
+
+Select a text paint layer (or its text mask Fill effect) to use the **Rotation** slider/degree field,
+**Flip horizontal**, and **Flip vertical**. These apply immediately to the selected UV-projected mask,
+preserving its offset and scale magnitude. Slider changes apply when released. Selecting the mask reads
+its existing rotation; clicking a flip button twice restores that axis. Flip requires Tiling scale mode.
+Signed rotation is normalized to a nonnegative equivalent for Painter (for example, -30° is written as 330°).
+Other projection modes are left unchanged and show a message. These controls affect the mask, not paint content.
+The rotation row uses the Channel Blending slider style. Its reset button restores the projection saved
+before this panel session's first rotation/flip edit. Without a saved snapshot it clears rotation and
+negative scale signs while keeping position and scale magnitude. Failed transform writes attempt rollback.
+If text has already disappeared, resetting cannot guarantee recovery: the mask may be outside existing
+paint coverage, and an earlier projection is only available through Painter undo or a saved session snapshot.
 
 ## Development / tests
 

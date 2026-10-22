@@ -1,10 +1,13 @@
 """Paintable text with a non-destructive SourceFont mask."""
-from PySide6 import QtWidgets
+from copy import deepcopy
+
+from PySide6 import QtWidgets, QtCore
 import substance_painter as sp
-from ...adapters.painter import available_font_resources, selected_single_layer, add_text_paint_layer
+from ...adapters.painter import available_font_resources, selected_single_layer
 from ...ui.common import error
 from ...adapters.painter import active_stack
 from .placement import measure_paint_bounds, placement_transform
+from . import controls
 
 
 class Panel(QtWidgets.QWidget):
@@ -12,84 +15,63 @@ class Panel(QtWidgets.QWidget):
         super().__init__()
         self.app = app
         self.resources = []
-        main = QtWidgets.QVBoxLayout(self)
-        note = QtWidgets.QLabel("Paint through an editable text mask. Paint on the layer content, not the mask. "
-                                "Changing the text reveals your existing paint through the new lettering. "
-                                "Paint a broad area to cover future text changes. Position the mask's Fill effect "
-                                "using Painter's projection controls.")
-        note.setWordWrap(True)
-        main.addWidget(note)
-        placement_note = QtWidgets.QLabel(
-            "Experimental paint-first placement: Prepare text area, paint a broad patch, then Fit text to painted area. "
-            "Uses the UV bounding-box center (not the 3D viewport center); single 0–1 tile, top-level Base Color paint "
-            "layer only. Seams, holes and separate patches may give an unsuitable center. Uses a temporary 512px export.")
-        placement_note.setWordWrap(True)
-        main.addWidget(placement_note)
-        prepare = QtWidgets.QPushButton("Prepare text area")
-        prepare.clicked.connect(self.prepare_area)
-        main.addWidget(prepare)
-        fit = QtWidgets.QPushButton("Fit text to painted area")
-        fit.clicked.connect(self.fit_painted_area)
-        main.addWidget(fit)
-        form = QtWidgets.QFormLayout()
-        self.font = QtWidgets.QComboBox()
-        self.font.setEditable(False)
-        self.search = QtWidgets.QLineEdit()
-        self.search.setPlaceholderText("Filter Painter fonts...")
-        self.search.textChanged.connect(self._filter)
-        form.addRow("Search", self.search)
-        form.addRow("Font", self.font)
-        self.text = QtWidgets.QPlainTextEdit("Hello World")
-        self.text.setMaximumHeight(90)
-        form.addRow("Text", self.text)
-        self.auto_size = QtWidgets.QCheckBox("Auto fit")
-        self.auto_size.setChecked(True)
-        form.addRow("Size", self.auto_size)
-        self.size = QtWidgets.QDoubleSpinBox()
-        self.size.setRange(0.001, 100)
-        self.size.setSingleStep(0.01)
-        self.size.setDecimals(3)
-        self.size.setValue(0.1)
-        self.size.setEnabled(False)
-        self.auto_size.toggled.connect(lambda on: self.size.setEnabled(not on))
-        form.addRow("Manual size (normalized)", self.size)
-        self.halign = QtWidgets.QComboBox()
-        self.halign.addItems(["Left", "Center", "Right"])
-        form.addRow("Horizontal align", self.halign)
-        self.line_spacing = QtWidgets.QDoubleSpinBox()
-        self.line_spacing.setRange(0, 10)
-        self.line_spacing.setValue(1.0)
-        self.line_spacing.setSingleStep(.1)
-        form.addRow("Line spacing", self.line_spacing)
-        self.char_spacing = QtWidgets.QDoubleSpinBox()
-        self.char_spacing.setRange(-2, 10)
-        self.char_spacing.setValue(0)
-        self.char_spacing.setSingleStep(.05)
-        form.addRow("Character spacing", self.char_spacing)
-        main.addLayout(form)
-        buttons = QtWidgets.QHBoxLayout()
-        create = QtWidgets.QPushButton("Create paintable text")
-        create.clicked.connect(self.create)
-        buttons.addWidget(create)
-        load = QtWidgets.QPushButton("Load selected text mask")
-        load.clicked.connect(self.load_selected)
-        buttons.addWidget(load)
-        update = QtWidgets.QPushButton("Update selected text mask")
-        update.clicked.connect(self.update_selected)
-        buttons.addWidget(update)
-        main.addLayout(buttons)
-        fonts = QtWidgets.QPushButton("Refresh font resources")
-        fonts.clicked.connect(self.refresh)
-        main.addWidget(fonts)
-        main.addStretch()
-        self.setMinimumWidth(380)
+        self._transform_originals = {}
+        self._selected_identity = None
+        self._loading = False
+        controls.build(self)
+        self._selection_timer = QtCore.QTimer(self)
+        self._selection_timer.setSingleShot(True)
+        self._selection_timer.setInterval(120)
+        self._selection_timer.timeout.connect(self._sync_selection)
+        self.app.events.add(self.request_refresh)
+        self.request_refresh()
 
     def refresh(self):
         try:
             self.resources = available_font_resources()
             self._filter(self.search.text())
+            self.request_refresh()
         except Exception as exc:
             error(self, "Font resources", exc)
+
+    def request_refresh(self):
+        self._selection_timer.start()
+
+    def _sync_selection(self):
+        if self._loading:
+            return
+        try:
+            node, _source = self._selected_source()
+            identity = (str(active_stack()), node.uid())
+        except (ValueError, RuntimeError, AttributeError):
+            self._selected_identity = None
+            self.update_button.setEnabled(False)
+            self.rotation.setEnabled(False)
+            self.rotation_degrees.setEnabled(False)
+            self.status.setText("Paint an area, then Fit")
+            return
+        self.update_button.setEnabled(True)
+        self.rotation.setEnabled(True)
+        self.rotation_degrees.setEnabled(True)
+        if identity == self._selected_identity:
+            return
+        self._selected_identity = identity
+        self._loading = True
+        try:
+            self.load_selected()
+            self.status.setText("Editing selected text mask")
+        finally:
+            self._loading = False
+
+    def _auto_size_changed(self, enabled):
+        self.size.setEnabled(not enabled)
+        self.size_slider.setEnabled(not enabled)
+
+    def _size_slider_changed(self, value):
+        controls.silently(self.size, controls.size_from_slider(value))
+
+    def _size_number_changed(self, value):
+        controls.silently(self.size_slider, controls.slider_from_size(value))
 
     def _filter(self, text):
         previous = self.font.currentData()
@@ -128,7 +110,7 @@ class Panel(QtWidgets.QWidget):
 
     def load_selected(self):
         try:
-            _node, source = self._selected_source()
+            node, source = self._selected_source()
             self.search.clear()
             self.refresh()
             match = next((i for i, resource in enumerate(self.resources)
@@ -149,6 +131,102 @@ class Panel(QtWidgets.QWidget):
             self.char_spacing.setValue(params.character_spacing)
         except Exception as exc:
             error(self, "Read text source", exc)
+            return
+        # Optional transform controls must not break the existing text-loading workflow.
+        try:
+            self._load_rotation(node)
+        except Exception as exc:
+            self.rotation.setToolTip("Rotation unavailable: " + str(exc))
+
+    def _set_rotation_controls(self, degrees):
+        """Display projection rotation without writing it back or rounding the source."""
+        degrees = round(degrees if -180 <= degrees <= 180 else (degrees + 180) % 360 - 180)
+        for widget in (self.rotation, self.rotation_degrees):
+            blocked = widget.blockSignals(True)
+            try:
+                widget.setValue(degrees)
+            finally:
+                widget.blockSignals(blocked)
+
+    def _load_rotation(self, node):
+        params = node.get_projection_parameters()
+        if params is not None and hasattr(params, "uv_transformation"):
+            self._set_rotation_controls(params.uv_transformation.rotation or 0)
+
+    def _selected_uv_projection(self):
+        node, _source = self._selected_source()
+        if node.get_projection_mode() != sp.layerstack.ProjectionMode.UV:
+            raise ValueError("Rotation and flip currently support UV-projected text masks only. "
+                             "Use Painter's projection controls for other projection modes.")
+        params = node.get_projection_parameters()
+        if params is None or params.uv_transformation is None:
+            raise ValueError("Selected text mask has no editable UV transformation")
+        return node, params
+
+    def rotate_selected(self, degrees):
+        node = original = None
+        try:
+            node, params = self._selected_uv_projection()
+            original = deepcopy(params)
+            self._remember_transform(node, original)
+            params.uv_transformation.rotation = degrees % 360
+            node.set_projection_parameters(params)
+            self._set_rotation_controls(degrees)
+        except Exception as exc:
+            exc = self._restore_failed_transform(node, original, exc)
+            error(self, "Rotate text mask", exc)
+
+    def flip_selected(self, axis):
+        node = original = None
+        try:
+            if axis not in (0, 1):
+                raise ValueError("Flip axis must be horizontal or vertical")
+            node, params = self._selected_uv_projection()
+            uv = params.uv_transformation
+            if uv.scale_mode != sp.layerstack.ScaleMode.Factors:
+                raise ValueError("Set the text mask's UV scale mode to Tiling before flipping")
+            if uv.scale is None or len(uv.scale) != 2 or not all(uv.scale):
+                raise ValueError("Selected text mask has no valid UV scale to flip")
+            original = deepcopy(params)
+            self._remember_transform(node, original)
+            scale = list(uv.scale)
+            scale[axis] = -scale[axis]
+            uv.scale = scale
+            node.set_projection_parameters(params)
+        except Exception as exc:
+            exc = self._restore_failed_transform(node, original, exc)
+            error(self, "Flip text mask", exc)
+
+    def _remember_transform(self, node, params):
+        # One small snapshot per edited mask, scoped to this panel instance.
+        self._transform_originals.setdefault(node.uid(), deepcopy(params))
+
+    def _restore_failed_transform(self, node, original, exc):
+        if node is not None and original is not None:
+            try:
+                node.set_projection_parameters(original)
+                self._set_rotation_controls(original.uv_transformation.rotation or 0)
+            except Exception as restore_exc:
+                return RuntimeError(f"{exc}. Could not restore text transform: {restore_exc}")
+        return exc
+
+    def reset_selected_transform(self):
+        try:
+            node, params = self._selected_uv_projection()
+            original = self._transform_originals.get(node.uid())
+            if original is not None:
+                params = deepcopy(original)
+            else:
+                uv = params.uv_transformation
+                if uv.scale_mode != sp.layerstack.ScaleMode.Factors:
+                    raise ValueError("Reset currently supports Tiling scale mode only")
+                uv.rotation = 0
+                if uv.scale is not None:
+                    uv.scale = [abs(value) for value in uv.scale]
+            node.set_projection_parameters(params)
+            self._set_rotation_controls(params.uv_transformation.rotation or 0)
+        except Exception as exc:
+            error(self, "Reset text transform", exc)
 
     def _apply_params(self, source, params=None):
         if params is None:
@@ -165,43 +243,24 @@ class Panel(QtWidgets.QWidget):
         params.background_opacity = 1.0
         source.set_parameters(params)
 
-    def create(self):
-        node = None
-        try:
-            text = self.text.toPlainText()
-            if not text.strip():
-                raise ValueError("Enter non-empty text before creating a text mask")
-            idx = self.font.currentData()
-            if idx is None:
-                self.refresh()
-                idx = self.font.currentData()
-            if idx is None:
-                raise ValueError("No compatible Painter font resource found")
-            resource = self.resources[idx]
-            node, _effect, source = add_text_paint_layer(resource.identifier())
-            node.set_name("MB Text: " + text.strip().splitlines()[0][:45])
-            self._apply_params(source)
-            sp.layerstack.set_selected_nodes([node])
-            sp.layerstack.set_selection_type(node, sp.layerstack.SelectionType.Content)
-        except Exception as exc:
-            if node is not None:
-                try:
-                    sp.layerstack.delete_node(node)
-                except Exception as cleanup_exc:
-                    exc = RuntimeError(f"{exc}. Could not remove incomplete text layer: {cleanup_exc}")
-            error(self, "Create paintable text", exc)
-
     def prepare_area(self):
+        layer = None
         try:
             stack = active_stack()
             if stack is None:
                 raise ValueError("Open a Painter project first")
+            if not stack.has_channel(sp.textureset.ChannelType.BaseColor):
+                raise ValueError("Add Base Color to this texture set before preparing a text area")
             layer = sp.layerstack.insert_paint(sp.layerstack.InsertPosition.from_textureset_stack(stack))
-            layer.active_channels = set(layer.active_channels) | {sp.textureset.ChannelType.BaseColor}
             layer.set_name("MB Text Area: paint here, then Fit")
             sp.layerstack.set_selected_nodes([layer])
             sp.layerstack.set_selection_type(layer, sp.layerstack.SelectionType.Content)
         except Exception as exc:
+            if layer is not None:
+                try:
+                    sp.layerstack.delete_node(layer)
+                except Exception as cleanup_exc:
+                    exc = RuntimeError(f"{exc}. Could not remove incomplete paint layer: {cleanup_exc}")
             error(self, "Prepare text area", exc)
 
     def fit_painted_area(self):
@@ -221,7 +280,7 @@ class Panel(QtWidgets.QWidget):
                 raise ValueError("Select the painted area's paint layer before fitting")
             if layer.has_mask():
                 raise ValueError("Fit requires an unmasked paint layer so existing masks are never replaced. "
-                                 "Use Load/Update for previously fitted text.")
+                                 "Select the text layer and use Update text for previously fitted text.")
             bounds = measure_paint_bounds(stack, layer)
             scale, offset = placement_transform(bounds)
             layer.add_mask(sp.layerstack.MaskBackground.Black)

@@ -332,10 +332,9 @@ def test_empty_font_text_does_not_create_layer(host_modules, monkeypatch, text):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
     create_layer = Mock()
     report = Mock()
-    monkeypatch.setattr(module, "add_text_paint_layer", create_layer)
     monkeypatch.setattr(module, "error", report)
     panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: text))
-    module.Panel.create(panel)
+    module.Panel.fit_painted_area(panel)
     create_layer.assert_not_called()
     assert isinstance(report.call_args.args[2], ValueError)
 
@@ -362,29 +361,50 @@ def test_text_mask_adapter_creates_separate_paint_and_mask(host_modules, monkeyp
     host_modules.layerstack.delete_node.assert_called_once_with(layer)
 
 
-def test_text_mask_creation_selects_content_and_cleans_up_failure(host_modules, monkeypatch):
+def test_text_panel_has_no_obsolete_create_action(host_modules):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
-    layer, effect, source = Mock(), Mock(), Mock()
-    create = Mock(return_value=(layer, effect, source))
-    monkeypatch.setattr(module, "add_text_paint_layer", create)
-    report = Mock()
-    monkeypatch.setattr(module, "error", report)
-    host_modules.layerstack = SimpleNamespace(
-        set_selected_nodes=Mock(), set_selection_type=Mock(), delete_node=Mock(),
-        SelectionType=SimpleNamespace(Content="content"))
-    resource = Mock()
-    resource.identifier.return_value = "font"
-    panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: "New text"),
-                            font=SimpleNamespace(currentData=lambda: 0), resources=[resource], _apply_params=Mock())
-    module.Panel.create(panel)
-    panel._apply_params.assert_called_once_with(source)
-    host_modules.layerstack.set_selected_nodes.assert_called_once_with([layer])
-    host_modules.layerstack.set_selection_type.assert_called_once_with(layer, "content")
-    report.assert_not_called()
-    panel._apply_params.side_effect = RuntimeError("Bad parameters")
-    module.Panel.create(panel)
-    host_modules.layerstack.delete_node.assert_called_once_with(layer)
-    assert isinstance(report.call_args.args[2], RuntimeError)
+    assert not hasattr(module.Panel, "create")
+
+
+@pytest.mark.parametrize("value", [0.001, 0.01, 0.1, 1, 10, 100])
+def test_manual_size_slider_mapping(host_modules, value):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.controls")
+    assert module.size_from_slider(module.slider_from_size(value)) == pytest.approx(value)
+
+
+def test_text_selection_sync_loads_once_and_preserves_pending_edits(host_modules, monkeypatch):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    node = Mock()
+    node.uid.return_value = 42
+    monkeypatch.setattr(module, "active_stack", lambda: "stack")
+    panel = SimpleNamespace(_loading=False, _selected_identity=None,
+                            _selected_source=lambda: (node, Mock()), load_selected=Mock(),
+                            update_button=Mock(), rotation=Mock(), rotation_degrees=Mock(), status=Mock())
+    module.Panel._sync_selection(panel)
+    module.Panel._sync_selection(panel)
+    panel.load_selected.assert_called_once()
+    assert panel._loading is False
+    node.uid.return_value = 43
+    module.Panel._sync_selection(panel)
+    assert panel.load_selected.call_count == 2
+    def no_text():
+        raise ValueError("No text selected")
+    panel._selected_source = no_text
+    module.Panel._sync_selection(panel)
+    assert panel._selected_identity is None
+    panel.update_button.setEnabled.assert_called_with(False)
+
+
+def test_manual_size_slider_sync_does_not_write_painter(host_modules):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    panel = SimpleNamespace(size=Mock(), size_slider=Mock())
+    module.Panel._size_slider_changed(panel, 400)
+    panel.size.setValue.assert_called_once_with(pytest.approx(0.1))
+    module.Panel._size_number_changed(panel, 1)
+    panel.size_slider.setValue.assert_called_once_with(600)
+    module.Panel._auto_size_changed(panel, True)
+    panel.size.setEnabled.assert_called_once_with(False)
+    panel.size_slider.setEnabled.assert_called_once_with(False)
 
 
 def test_text_mask_params_are_white_on_opaque_black(host_modules):
@@ -467,6 +487,200 @@ def test_empty_text_mask_update_does_not_touch_selection(host_modules, monkeypat
     assert isinstance(report.call_args.args[2], ValueError)
 
 
+@pytest.mark.parametrize("case", ["success", "missing_channel", "no_project", "selection_failure", "cleanup_failure"])
+def test_prepare_text_area_uses_stack_channels_and_cleans_failures(host_modules, monkeypatch, case):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    # A strict API double: paint layers do not expose active_channels.
+    class PaintLayer:
+        __slots__ = ("set_name",)
+    layer = PaintLayer()
+    layer.set_name = Mock()
+    stack = SimpleNamespace(has_channel=Mock(return_value=case != "missing_channel"))
+    monkeypatch.setattr(module, "active_stack", lambda: None if case == "no_project" else stack)
+    report = Mock()
+    monkeypatch.setattr(module, "error", report)
+    host_modules.textureset = SimpleNamespace(ChannelType=SimpleNamespace(BaseColor="base"))
+    host_modules.layerstack = SimpleNamespace(
+        insert_paint=Mock(return_value=layer),
+        InsertPosition=SimpleNamespace(from_textureset_stack=Mock(return_value="root")),
+        set_selected_nodes=Mock(), set_selection_type=Mock(), delete_node=Mock(),
+        SelectionType=SimpleNamespace(Content="content"))
+    api = host_modules.layerstack
+    if case in ("selection_failure", "cleanup_failure"):
+        api.set_selection_type.side_effect = RuntimeError("Selection failed")
+    if case == "cleanup_failure":
+        api.delete_node.side_effect = RuntimeError("Cleanup failed")
+    module.Panel.prepare_area(None)
+    if case == "success":
+        report.assert_not_called()
+        stack.has_channel.assert_called_once_with("base")
+        api.insert_paint.assert_called_once_with("root")
+        layer.set_name.assert_called_once_with("MB Text Area: paint here, then Fit")
+        api.set_selected_nodes.assert_called_once_with([layer])
+        api.set_selection_type.assert_called_once_with(layer, "content")
+        api.delete_node.assert_not_called()
+    elif case in ("missing_channel", "no_project"):
+        api.insert_paint.assert_not_called()
+        api.delete_node.assert_not_called()
+        assert isinstance(report.call_args.args[2], ValueError)
+    else:
+        api.delete_node.assert_called_once_with(layer)
+        message = str(report.call_args.args[2])
+        assert "Selection failed" in message
+        if case == "cleanup_failure":
+            assert "Cleanup failed" in message
+
+
+def test_measure_paint_bounds_checks_stack_channel_before_export(host_modules):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.placement")
+    class PaintLayer:
+        __slots__ = ()
+        def get_parent(self):
+            return None
+    material = SimpleNamespace(all_uv_tiles=lambda: [], is_layered_material=lambda: False)
+    stack = SimpleNamespace(material=lambda: material, has_channel=Mock(return_value=False))
+    host_modules.layerstack = SimpleNamespace(PaintLayerNode=PaintLayer)
+    host_modules.textureset = SimpleNamespace(ChannelType=SimpleNamespace(BaseColor="base"))
+    host_modules.export = SimpleNamespace(export_project_textures=Mock())
+    with pytest.raises(ValueError, match="Add Base Color to this texture set"):
+        module.measure_paint_bounds(stack, PaintLayer())
+    stack.has_channel.assert_called_once_with("base")
+    host_modules.export.export_project_textures.assert_not_called()
+
+
+@pytest.mark.parametrize("degrees", [-180, -45, 0, 90, 180])
+def test_text_rotation_preserves_scale_offset_and_other_projection_settings(host_modules, monkeypatch, degrees):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    uv = SimpleNamespace(rotation=23, scale=[-3.0, 4.0], offset=[0.2, -0.1], scale_mode="factors")
+    params = SimpleNamespace(uv_transformation=uv, uv_wrapping_mode="none", filtering_mode="sharp")
+    node = Mock()
+    panel = SimpleNamespace(_selected_uv_projection=lambda: (node, params), _set_rotation_controls=Mock(),
+                            _remember_transform=Mock(), _restore_failed_transform=Mock(side_effect=lambda n, p, e: e))
+    report = Mock()
+    monkeypatch.setattr(module, "error", report)
+    module.Panel.rotate_selected(panel, degrees)
+    assert uv.rotation == degrees % 360
+    assert uv.scale == [-3.0, 4.0]
+    assert uv.offset == [0.2, -0.1]
+    assert params.uv_wrapping_mode == "none"
+    assert params.filtering_mode == "sharp"
+    node.set_projection_parameters.assert_called_once_with(params)
+    panel._set_rotation_controls.assert_called_once_with(degrees)
+    report.assert_not_called()
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+def test_text_flip_preserves_position_rotation_and_toggles_back(host_modules, monkeypatch, axis):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    host_modules.layerstack = SimpleNamespace(ScaleMode=SimpleNamespace(Factors="factors"))
+    uv = SimpleNamespace(rotation=37, scale=(3.0, -4.0), offset=[0.25, 0.1], scale_mode="factors")
+    params = SimpleNamespace(uv_transformation=uv)
+    node = Mock()
+    panel = SimpleNamespace(_selected_uv_projection=lambda: (node, params), _remember_transform=Mock(),
+                            _restore_failed_transform=Mock(side_effect=lambda n, p, e: e))
+    report = Mock()
+    monkeypatch.setattr(module, "error", report)
+    module.Panel.flip_selected(panel, axis)
+    assert uv.scale == ([-3.0, -4.0] if axis == 0 else [3.0, 4.0])
+    assert uv.rotation == 37
+    assert uv.offset == [0.25, 0.1]
+    module.Panel.flip_selected(panel, axis)
+    assert uv.scale == [3.0, -4.0]
+    assert node.set_projection_parameters.call_count == 2
+    report.assert_not_called()
+
+
+@pytest.mark.parametrize("mode, scale", [("physical", [3, 4]), ("factors", None), ("factors", [0, 4])])
+def test_text_flip_refuses_unsupported_scale_without_writing(host_modules, monkeypatch, mode, scale):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    host_modules.layerstack = SimpleNamespace(ScaleMode=SimpleNamespace(Factors="factors"))
+    params = SimpleNamespace(uv_transformation=SimpleNamespace(scale_mode=mode, scale=scale))
+    node = Mock()
+    panel = SimpleNamespace(_selected_uv_projection=lambda: (node, params),
+                            _restore_failed_transform=Mock(side_effect=lambda n, p, e: e))
+    report = Mock()
+    monkeypatch.setattr(module, "error", report)
+    module.Panel.flip_selected(panel, 0)
+    node.set_projection_parameters.assert_not_called()
+    assert isinstance(report.call_args.args[2], ValueError)
+
+
+@pytest.mark.parametrize("mode", ["uv", "planar"])
+def test_text_transform_checks_projection_mode(host_modules, mode):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    host_modules.layerstack = SimpleNamespace(ProjectionMode=SimpleNamespace(UV="uv"))
+    node = Mock()
+    node.get_projection_mode.return_value = mode
+    params = SimpleNamespace(uv_transformation=SimpleNamespace(rotation=0))
+    node.get_projection_parameters.return_value = params
+    panel = SimpleNamespace(_selected_source=lambda: (node, Mock()))
+    if mode == "uv":
+        assert module.Panel._selected_uv_projection(panel) == (node, params)
+    else:
+        with pytest.raises(ValueError, match="UV-projected"):
+            module.Panel._selected_uv_projection(panel)
+        node.get_projection_parameters.assert_not_called()
+    node.set_projection_parameters.assert_not_called()
+
+
+def test_text_rotation_load_blocks_signals_and_preserves_fractional_source(host_modules):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    slider, spin = Mock(), Mock()
+    slider.blockSignals.return_value = False
+    spin.blockSignals.return_value = True
+    panel = SimpleNamespace(rotation=slider, rotation_degrees=spin)
+    module.Panel._set_rotation_controls(panel, 405.25)
+    for widget, previous in ((slider, False), (spin, True)):
+        assert widget.method_calls == [
+            ("blockSignals", (True,), {}), ("setValue", (45,), {}),
+            ("blockSignals", (previous,), {})]
+    node = Mock()
+    node.get_projection_parameters.return_value = SimpleNamespace(
+        uv_transformation=SimpleNamespace(rotation=45.25))
+    panel = SimpleNamespace(_set_rotation_controls=Mock())
+    module.Panel._load_rotation(panel, node)
+    panel._set_rotation_controls.assert_called_once_with(45.25)
+    node.set_projection_parameters.assert_not_called()
+
+
+def test_failed_text_rotation_restores_original_projection(host_modules, monkeypatch):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    params = SimpleNamespace(uv_transformation=SimpleNamespace(rotation=17, scale=[2, 3], offset=[.2, .3]))
+    node = Mock()
+    node.uid.return_value = 42
+    node.set_projection_parameters.side_effect = [RuntimeError("Write failed"), None]
+    panel = SimpleNamespace(_selected_uv_projection=lambda: (node, params), _transform_originals={},
+                            _set_rotation_controls=Mock())
+    panel._remember_transform = lambda n, p: module.Panel._remember_transform(panel, n, p)
+    panel._restore_failed_transform = lambda n, p, e: module.Panel._restore_failed_transform(panel, n, p, e)
+    report = Mock()
+    monkeypatch.setattr(module, "error", report)
+    module.Panel.rotate_selected(panel, 90)
+    restored = node.set_projection_parameters.call_args.args[0]
+    assert restored.uv_transformation.rotation == 17
+    assert restored.uv_transformation.scale == [2, 3]
+    assert restored.uv_transformation.offset == [.2, .3]
+    panel._set_rotation_controls.assert_called_once_with(17)
+    assert str(report.call_args.args[2]) == "Write failed"
+
+
+def test_text_transform_reset_restores_session_snapshot(host_modules, monkeypatch):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    node = Mock()
+    node.uid.return_value = 42
+    original = SimpleNamespace(uv_transformation=SimpleNamespace(rotation=0, scale=[2, 3], offset=[.2, .3]))
+    current = SimpleNamespace(uv_transformation=SimpleNamespace(rotation=90, scale=[-2, 3], offset=[.2, .3]))
+    panel = SimpleNamespace(_selected_uv_projection=lambda: (node, current),
+                            _transform_originals={42: original}, _set_rotation_controls=Mock())
+    report = Mock()
+    monkeypatch.setattr(module, "error", report)
+    module.Panel.reset_selected_transform(panel)
+    restored = node.set_projection_parameters.call_args.args[0]
+    assert restored == original
+    assert restored is not original
+    report.assert_not_called()
+
+
 def test_paint_coverage_bounds_and_uv_transform(host_modules):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.placement")
     image = SimpleNamespace(isNull=lambda: False, width=lambda: 10, height=lambda: 10,
@@ -497,7 +711,6 @@ def test_coverage_export_restores_visibility_and_deletes_temp_files(host_modules
     layer = PaintLayer()
     layer.get_parent = lambda: None
     layer.uid = lambda: 1
-    layer.active_channels = {"base"}
     layer.has_mask = lambda: True
     layer.is_mask_enabled = lambda: True
     layer.enable_mask = Mock()
@@ -507,7 +720,7 @@ def test_coverage_export_restores_visibility_and_deletes_temp_files(host_modules
     sibling.uid.return_value = 2
     sibling.is_visible.return_value = True
     material = SimpleNamespace(all_uv_tiles=lambda: [], is_layered_material=lambda: False)
-    stack = SimpleNamespace(material=lambda: material)
+    stack = SimpleNamespace(material=lambda: material, has_channel=lambda channel: channel == "base")
     host_modules.layerstack = SimpleNamespace(PaintLayerNode=PaintLayer, get_root_layer_nodes=lambda stack: [layer, sibling])
     host_modules.textureset = SimpleNamespace(ChannelType=SimpleNamespace(BaseColor="base"))
     folders = []
@@ -517,6 +730,11 @@ def test_coverage_export_restores_visibility_and_deletes_temp_files(host_modules
         assert path.is_dir()
         channel = config["exportPresets"][0]["maps"][0]["channels"][0]
         assert channel == {"destChannel": "R", "srcChannel": "A", "srcMapType": "documentMap", "srcMapName": "baseColor"}
+        parameters = config["exportPresets"][0]["maps"][0]["parameters"]
+        assert parameters["paddingAlgorithm"] == "transparent"
+        assert parameters["dilationDistance"] == 0
+        assert parameters["sizeLog2"] == 9
+        assert parameters["fileFormat"] == "png"
         (path / "coverage.png").write_bytes(b"temporary")
         if fail:
             raise RuntimeError("Export failed")

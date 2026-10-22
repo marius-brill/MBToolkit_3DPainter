@@ -1,5 +1,18 @@
 # Manual Painter test checklist (mandatory before a release)
 
+## Current Font Tool UI regression checks
+
+The paint-first UI replaces the older Create/Load buttons mentioned in historical checks below.
+Use **Prepare text area → paint → Fit to painted area**. Selecting an existing text mask now loads it automatically.
+
+- [ ] No Create paintable text or Load selected buttons; only a short status, text/font inputs, placement buttons, adjustment rows and Update text. Long instructions appear as tooltips, not paragraphs.
+- [ ] Select two different text layers in turn: text/font/size/rotation follow selection without writing to Painter. Typing pending text on one layer is not overwritten by painting/model events on that same layer.
+- [ ] Clear selection or select unrelated paint: Update/rotation disable without error popups or losing draft text. Select the original text layer again: saved values load.
+- [ ] Turn off Auto fit; manual size slider and precise field stay synchronized from 0.001 to 100. Update text applies size without changing projection or paint.
+- [ ] Rotate -30°, -90° and +30°: confirm negative rotation is visibly opposite; signed display is retained while Painter receives equivalent nonnegative angles. Check slider endpoints ±180°.
+- [ ] Advanced is initially collapsed; opening it exposes alignment and spacing. Font refresh icon and filter work. Reopening the dock does not overwrite pending edits on the same mask.
+- [ ] Repeat Prepare/paint/Fit and edit/save/reopen to confirm the established placement and editable-mask workflow remains working.
+
 Capture Painter version (`application.version_info()`), OS, GPU, and any Qt/Python console errors.
 
 - [ ] Painter discovers package via `SUBSTANCE_PAINTER_PLUGINS_PATH` (repository moved to a different directory).
@@ -30,6 +43,8 @@ Capture Painter version (`application.version_info()`), OS, GPU, and any Qt/Pyth
 **Open risks:** Font SourceFont availability on the earliest target Painter versions; event ordering; QAction conflicts with other plugins; Painter undo integration on rapidly updated sliders.
 
 ## Experimental paint-first placement
+
+- [ ] Select a text paint layer or its mask Fill effect. Rotate via slider and degree field; verify position/scale stay unchanged. Load reads rotation without changing the mask. Flip horizontally/vertically; verify each mirrors the correct local axis and clicking twice restores it. Update text/font afterward preserves transforms. Check undo/redo and save/reopen. Non-UV projections and physical-size flips are rejected without changes.
 
 - [ ] Prepare text area selects the new unmasked paint layer content. Paint an off-center patch, Fit, and verify the text is centered on the patch (not the UV tile), with correct scale and no repeated lettering.
 - [ ] Verify both U and V placement using patches in opposite corners. Confirm exported Base Color alpha actually represents isolated paint coverage in the installed Painter version.

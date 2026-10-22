@@ -42,8 +42,8 @@ def measure_paint_bounds(stack, layer):
     tiles = material.all_uv_tiles()
     if material.is_layered_material() or len(tiles) > 1 or any(tile.u != 0 or tile.v != 0 for tile in tiles):
         raise ValueError("Fit currently supports a single 0–1 UV tile without material layering")
-    if sp.textureset.ChannelType.BaseColor not in layer.active_channels:
-        raise ValueError("Enable Base Color on the paint layer and paint the placement area first")
+    if not stack.has_channel(sp.textureset.ChannelType.BaseColor):
+        raise ValueError("Add Base Color to this texture set and paint the placement area first")
     roots = sp.layerstack.get_root_layer_nodes(stack)
     visibility = [(node, node.is_visible()) for node in roots]
     mask_enabled = layer.is_mask_enabled() if layer.has_mask() else None
@@ -61,7 +61,8 @@ def measure_paint_bounds(stack, layer):
                         "destChannel": "R", "srcChannel": "A",
                         "srcMapType": "documentMap", "srcMapName": "baseColor"}],
                     "parameters": {"fileFormat": "png", "bitDepth": "8", "sizeLog2": 9,
-                                   "paddingAlgorithm": "transparent", "dithering": False}}]}],
+                                   "paddingAlgorithm": "transparent", "dilationDistance": 0,
+                                   "dithering": False}}]}],
                 "exportList": [{"rootPath": str(stack)}]}
             result = sp.export.export_project_textures(config)
             if result.status != sp.export.ExportStatus.Success:
