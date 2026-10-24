@@ -6,7 +6,7 @@ def test_default_features():
     config = default_settings()
     assert set(config["features"]) == {"pie_menus", "channel_blending", "font_tool"}
     assert "mb.performance" not in config["pie_menus"][0]["actions"]
-    assert config["schema_version"] == 1
+    assert config["schema_version"] == 2
 
 
 def test_validation_migration_and_restrictions():

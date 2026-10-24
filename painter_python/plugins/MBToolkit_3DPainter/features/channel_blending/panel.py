@@ -208,8 +208,12 @@ class Panel(QtWidgets.QWidget):
         self.rows.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         self.area.setWidget(contents)
         self.area.hide()
-        footer = QtWidgets.QHBoxLayout()
-        footer.setContentsMargins(8, 7, 8, 3)
+        footer_widget = QtWidgets.QWidget()
+        footer_widget.setObjectName("MBBlendFooter")
+        footer_widget.setStyleSheet("QToolButton { padding: 0px 4px; margin: 0; font-size: 10px; }")
+        footer = QtWidgets.QHBoxLayout(footer_widget)
+        footer.setContentsMargins(8, 1, 8, 1)
+        footer.setSpacing(3)
         for name, text in (("Normal", "NO"), ("Dissolve", "DI"), ("Passthrough", "PA"),
                            ("Multiply", "MU"), ("Overlay", "OV")):
             mode = sp.layerstack.BlendingMode.__members__.get(name)
@@ -226,7 +230,7 @@ class Panel(QtWidgets.QWidget):
         refresh.setToolTip("Refresh selected layer")
         refresh.clicked.connect(self.refresh)
         footer.addWidget(refresh)
-        main.addLayout(footer)
+        main.addWidget(footer_widget)
         self.setMinimumWidth(440)
         app.events.add(self.request_refresh)
 

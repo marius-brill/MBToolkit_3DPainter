@@ -3,6 +3,8 @@ import uuid
 from PySide6 import QtCore, QtGui, QtWidgets
 from ...core.models import MAX_PIE_ACTIONS, clone_config
 from ...ui.common import error
+from .preview import Preview
+from .macro_editor import MacroEditor
 
 
 class Editor(QtWidgets.QDialog):
@@ -10,24 +12,38 @@ class Editor(QtWidgets.QDialog):
         super().__init__(parent)
         self.app = app
         self.setWindowTitle("MBToolkit · Pie Menu Editor")
-        self.resize(670, 460)
+        self.resize(1100, 800)
         self.menus = clone_config(app.settings.data["pie_menus"])
         outer = QtWidgets.QVBoxLayout(self)
+        self.tabs = QtWidgets.QTabWidget()
+        outer.addWidget(self.tabs, 1)
+        page = QtWidgets.QWidget()
+        self.tabs.addTab(page, "Pie Menus")
+        self.macro_editor = MacroEditor(app.settings.data.get("macros", []))
+        self.tabs.addTab(self.macro_editor, "Macros")
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(9, 9, 9, 9)
+        page_layout.setSpacing(6)
         panes = QtWidgets.QHBoxLayout()
-        outer.addLayout(panes, 1)
-        left = QtWidgets.QVBoxLayout()
-        panes.addLayout(left, 1)
-        left.addWidget(QtWidgets.QLabel("Pie menus"))
+        panes.setSpacing(6)
+        page_layout.addLayout(panes, 1)
+        sidebar = QtWidgets.QWidget()
+        sidebar.setFixedWidth(264)
+        left = QtWidgets.QVBoxLayout(sidebar)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(6)
+        panes.addWidget(sidebar)
         self.menulist = QtWidgets.QListWidget()
         left.addWidget(self.menulist)
-        menu_tools = QtWidgets.QHBoxLayout()
+        menu_tools = QtWidgets.QVBoxLayout()
+        menu_tools.setSpacing(6)
         left.addLayout(menu_tools)
         for text, fn in (("New", self.add_menu), ("Duplicate", self.duplicate), ("Delete", self.delete_menu)):
             btn = QtWidgets.QPushButton(text)
             btn.clicked.connect(fn)
             menu_tools.addWidget(btn)
         right = QtWidgets.QVBoxLayout()
-        panes.addLayout(right, 2)
+        panes.addLayout(right, 3)
         form = QtWidgets.QFormLayout()
         right.addLayout(form)
         self.name = QtWidgets.QLineEdit()
@@ -37,19 +53,28 @@ class Editor(QtWidgets.QDialog):
         form.addRow("Shortcut", self.keyedit)
         self.name.editingFinished.connect(self.commit_current)
         self.keyedit.keySequenceChanged.connect(lambda *_: self.commit_current())
-        right.addWidget(QtWidgets.QLabel("Actions (clockwise from top)"))
         self.actions = QtWidgets.QListWidget()
+        self.actions.hide()
+        self.preview = Preview(self.actions.setCurrentRow, self.reorder_slice)
+        right.addWidget(self.preview, 1, QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.actions.currentRowChanged.connect(self.select_slice)
         self.actions.itemChanged.connect(self.rename_action)
         self.actions.setToolTip("Double-click a feature to rename it. Clear its name to restore the default.")
-        right.addWidget(self.actions, 1)
-        right.addWidget(QtWidgets.QLabel("Double-click a feature to edit its display name."))
+        self.display_name = QtWidgets.QLineEdit()
+        self.display_name.setPlaceholderText("Default function name")
+        form.addRow("Slice display name", self.display_name)
+        self.display_name.editingFinished.connect(self.edit_slice_name)
+        search = QtWidgets.QLineEdit()
+        search.setPlaceholderText("Search Painter functions, toolkit tools, macros, scripts…")
+        search.textChanged.connect(self.filter_catalog)
+        right.addWidget(search)
         action_line = QtWidgets.QHBoxLayout()
         right.addLayout(action_line)
         self.catalog = QtWidgets.QComboBox()
         self.catalog.setMinimumWidth(180)
+        self.catalog.activated.connect(self.assign_function)
         action_line.addWidget(self.catalog, 1)
-        for text, fn in (("Add", self.add_action), ("Remove", self.remove_action),
-                         ("↑", lambda: self.move_action(-1)), ("↓", lambda: self.move_action(1))):
+        for text, fn in (("Add slice", self.add_action), ("Remove", self.remove_action)):
             btn = QtWidgets.QPushButton(text)
             btn.clicked.connect(fn)
             action_line.addWidget(btn)
@@ -60,7 +85,80 @@ class Editor(QtWidgets.QDialog):
         outer.addWidget(buttons)
         self.menulist.currentRowChanged.connect(self.select_menu)
         self.current = -1
+        self.tabs.currentChanged.connect(self.refresh_catalog)
         self.populate()
+
+    def command_catalog(self):
+        items = [(ident, label) for ident, label in self.app.commands.catalog() if not ident.startswith("macro:")]
+        items.extend(("macro:" + m["id"], "Macro: " + m["name"]) for m in self.macro_editor.macros)
+        return sorted(items, key=lambda pair: pair[1].casefold())
+
+    def refresh_catalog(self, *_args):
+        self.macro_editor.commit()
+        self.filter_catalog("")
+        self.update_preview()
+
+    def filter_catalog(self, text):
+        previous = self.catalog.currentData()
+        self.catalog.clear()
+        for ident, label in self.command_catalog():
+            if text.casefold() in (label + " " + ident).casefold():
+                self.catalog.addItem(label, ident)
+        index = self.catalog.findData(previous)
+        if index >= 0:
+            self.catalog.setCurrentIndex(index)
+
+    def update_preview(self):
+        if not 0 <= self.current < len(self.menus):
+            self.preview.actions = []
+            self.preview.title = "No menu"
+        else:
+            menu = self.menus[self.current]
+            names = self.action_names()
+            self.preview.title = menu["name"]
+            self.preview.actions = [(ident, names[i] or self.label(ident)) for i, ident in enumerate(menu["actions"])]
+        self.preview.hovered = self.actions.currentRow()
+        self.preview.update()
+
+    def select_slice(self, row):
+        if self.current >= 0 and 0 <= row < len(self.menus[self.current]["actions"]):
+            self.display_name.setText(self.action_names()[row])
+            self.catalog.setCurrentIndex(self.catalog.findData(self.menus[self.current]["actions"][row]))
+        else:
+            self.display_name.clear()
+        self.update_preview()
+
+    def edit_slice_name(self):
+        row = self.actions.currentRow()
+        if self.current >= 0 and row >= 0:
+            self.actions.item(row).setText(self.display_name.text())
+            self.update_preview()
+
+    def assign_function(self, _index):
+        row = self.actions.currentRow()
+        ident = self.catalog.currentData()
+        if self.current >= 0 and row >= 0 and ident is not None:
+            self.menus[self.current]["actions"][row] = ident
+            self.update_preview()
+
+    def reorder_slice(self, source, target):
+        if self.current < 0:
+            return
+        names = self.action_names()
+        values = self.menus[self.current]["actions"]
+        names[source], names[target] = names[target], names[source]
+        values[source], values[target] = values[target], values[source]
+        blocked = self.actions.blockSignals(True)
+        try:
+            first = self.actions.takeItem(max(source, target))
+            second = self.actions.takeItem(min(source, target))
+            self.actions.insertItem(min(source, target), first)
+            self.actions.insertItem(max(source, target), second)
+        finally:
+            self.actions.blockSignals(blocked)
+        self.actions.setCurrentRow(target)
+        self.select_slice(target)
+        self.update_preview()
 
     def populate(self, select=0):
         self.commit_current()
@@ -82,7 +180,7 @@ class Editor(QtWidgets.QDialog):
         self.keyedit.setEnabled(active)
         self.actions.clear()
         self.catalog.clear()
-        for ident, title in self.app.commands.catalog():
+        for ident, title in self.command_catalog():
             self.catalog.addItem(title, ident)
         if active:
             m = self.menus[index]
@@ -98,9 +196,10 @@ class Editor(QtWidgets.QDialog):
         else:
             self.name.clear()
             self.keyedit.clear()
+        self.update_preview()
 
     def label(self, command):
-        return next((label for ident,label in self.app.commands.catalog() if ident==command),
+        return next((label for ident,label in self.command_catalog() if ident==command),
                     "Missing: " + command)
 
     def append_action_item(self, command, name=""):
@@ -140,6 +239,7 @@ class Editor(QtWidgets.QDialog):
             m["name"] = self.name.text().strip()[:80] or m["id"]
             m["shortcut"] = self.keyedit.keySequence().toString(QtGui.QKeySequence.SequenceFormat.PortableText)
             self.menulist.item(self.current).setText(m["name"])
+            self.update_preview()
 
     def add_menu(self):
         self.commit_current()
@@ -172,9 +272,15 @@ class Editor(QtWidgets.QDialog):
         if len(values) >= MAX_PIE_ACTIONS:
             error(self, "Pie menu", f"Maximum {MAX_PIE_ACTIONS} slices")
             return
-        values.append(self.catalog.currentData())
-        self.action_names()
-        self.append_action_item(values[-1])
+        names = self.action_names()
+        row = self.actions.currentRow()
+        target = row + 1 if row >= 0 else len(values)
+        values.insert(target, self.catalog.currentData())
+        names.insert(target, "")
+        self.append_action_item(values[target])
+        self.actions.insertItem(target, self.actions.takeItem(self.actions.count() - 1))
+        self.actions.setCurrentRow(target)
+        self.update_preview()
 
     def remove_action(self):
         i = self.actions.currentRow()
@@ -182,6 +288,7 @@ class Editor(QtWidgets.QDialog):
             self.action_names().pop(i)
             self.menus[self.current]["actions"].pop(i)
             self.actions.takeItem(i)
+            self.update_preview()
 
     def move_action(self, direction):
         i = self.actions.currentRow()
@@ -196,6 +303,7 @@ class Editor(QtWidgets.QDialog):
             item = self.actions.takeItem(i)
             self.actions.insertItem(j, item)
             self.actions.setCurrentRow(j)
+            self.update_preview()
 
     def accept(self):
         self.commit_current()
@@ -231,10 +339,18 @@ class Editor(QtWidgets.QDialog):
             if decision != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
         try:
+            self.macro_editor.commit()
+            previous = self.app.settings.copy()
             self.app.settings.data["pie_menus"] = self.menus
+            self.app.settings.data["macros"] = self.macro_editor.macros
             self.app.settings.save()
-            self.app.refresh_pie_shortcuts()
         except Exception as exc:
+            if "previous" in locals():
+                self.app.settings.data = previous
             error(self, "Save pie menus", exc)
             return
+        try:
+            self.app.refresh_pie_shortcuts()
+        except Exception as exc:
+            error(self, "Settings saved, but shortcuts could not be rebuilt", exc)
         super().accept()

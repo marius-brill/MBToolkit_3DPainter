@@ -13,12 +13,13 @@ SAFE_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 def default_settings():
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "plugin_version_last_run": "0.1.0",
         "features": {name: {"enabled": on} for name, on in FEATURES.items()},
         "pie_menus": [{"id": "main", "name": "Main", "shortcut": "",
                        "actions": ["mb.blending", "mb.fonts", "mb.preferences"]}],
         "allow_custom_python": False,
+        "macros": [],
     }
 
 
@@ -28,13 +29,26 @@ def clean_config(raw):
     if not isinstance(raw, dict):
         return cfg
     ver = raw.get("schema_version", 0)
-    if not isinstance(ver, int) or ver > 1 or ver < 0:
+    if not isinstance(ver, int) or ver > 2 or ver < 0:
         raise ValueError("Settings schema is newer than this plugin supports")
     for feature in FEATURES:
         item = raw.get("features", {}).get(feature, {}) if isinstance(raw.get("features"), dict) else {}
         if isinstance(item, dict) and isinstance(item.get("enabled"), bool):
             cfg["features"][feature]["enabled"] = item["enabled"]
     cfg["allow_custom_python"] = raw.get("allow_custom_python") is True
+    macros = raw.get("macros", [])
+    if not isinstance(macros, list):
+        raise ValueError("Macros must be a list")
+    from .macros import validate_macro
+    used_macros = set()
+    for macro in macros:
+        validate_macro(macro)
+        if macro["id"] in used_macros or len(used_macros) >= 100:
+            raise ValueError("Duplicate macro identifier or too many macros")
+        used_macros.add(macro["id"])
+        cfg["macros"].append({"id": macro["id"], "name": macro["name"].strip()[:80],
+                              "description": str(macro.get("description", ""))[:500],
+                              "steps": list(macro["steps"])})
     menus = raw.get("pie_menus")
     if isinstance(menus, list):
         result, used = [], set()

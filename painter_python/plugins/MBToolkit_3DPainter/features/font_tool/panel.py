@@ -6,8 +6,9 @@ import substance_painter as sp
 from ...adapters.painter import available_font_resources, selected_single_layer
 from ...ui.common import error
 from ...adapters.painter import active_stack
-from .placement import measure_paint_bounds, placement_transform
+from .placement import FitDiagnostics, measure_paint_bounds, placement_transform, verify_placement
 from . import controls
+from .sizing import metadata_key, read_state, scaled_projection, write_state
 
 
 class Panel(QtWidgets.QWidget):
@@ -16,8 +17,17 @@ class Panel(QtWidgets.QWidget):
         self.app = app
         self.resources = []
         self._transform_originals = {}
+        self._size_dirty = False
         self._selected_identity = None
+        self._fit_result_selection = None
         self._loading = False
+        self._updating = False
+        self._disposed = False
+        self._pending_identity = None
+        self._update_timer = QtCore.QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(250)
+        self._update_timer.timeout.connect(self._flush_live_update)
         controls.build(self)
         self._selection_timer = QtCore.QTimer(self)
         self._selection_timer.setSingleShot(True)
@@ -35,55 +45,127 @@ class Panel(QtWidgets.QWidget):
             error(self, "Font resources", exc)
 
     def request_refresh(self):
-        self._selection_timer.start()
+        if not self._disposed:
+            self._selection_timer.start()
 
-    def _sync_selection(self):
-        if self._loading:
+    def _cancel_live_update(self):
+        self._update_timer.stop()
+        self._pending_identity = None
+
+    def _live_update_changed(self, enabled):
+        self._cancel_live_update()
+        if enabled:
+            self._queue_live_update()
+
+    def _queue_live_update(self, *_args):
+        if self._loading or self._updating or self._disposed or not self.live_update.isChecked():
+            return
+        self._cancel_live_update()
+        if self._selected_identity is None or not self.text.toPlainText().strip():
             return
         try:
             node, _source = self._selected_source()
             identity = (str(active_stack()), node.uid())
         except (ValueError, RuntimeError, AttributeError):
+            return
+        if identity != self._selected_identity:
+            self.request_refresh()
+            return
+        self._pending_identity = identity
+        self._update_timer.start()
+
+    def _flush_live_update(self):
+        identity = self._pending_identity
+        self._cancel_live_update()
+        if (identity is None or self._disposed or self._loading or self._updating
+                or not self.live_update.isChecked() or not self.text.toPlainText().strip()):
+            return
+        try:
+            node, source = self._selected_source()
+            if identity != self._selected_identity or identity != (str(active_stack()), node.uid()):
+                self.request_refresh()
+                return
+            self._updating = True
+            self._write_selected(node, source)
+            self.status.setText("Text mask updated")
+            self.status.setToolTip("")
+        except Exception as exc:
+            # Live typing must not open repeated modal dialogs on a host failure.
+            self.status.setText("Live update failed; use Update text to retry")
+            self.status.setToolTip(str(exc))
+        finally:
+            self._updating = False
+
+    def dispose(self):
+        self._disposed = True
+        self._cancel_live_update()
+        self._selection_timer.stop()
+
+    def _sync_selection(self):
+        if self._loading or self._updating or self._disposed:
+            return
+        keep_fit_status = False
+        if getattr(self, "_fit_result_selection", None) is not None:
+            try:
+                stack, selected = selected_single_layer()
+                keep_fit_status = (str(stack), selected.uid()) == self._fit_result_selection
+            except (ValueError, RuntimeError, AttributeError):
+                pass
+            if not keep_fit_status:
+                self._fit_result_selection = None
+        try:
+            node, _source = self._selected_source()
+            identity = (str(active_stack()), node.uid())
+        except (ValueError, RuntimeError, AttributeError):
+            self._cancel_live_update()
             self._selected_identity = None
             self.update_button.setEnabled(False)
             self.rotation.setEnabled(False)
             self.rotation_degrees.setEnabled(False)
-            self.status.setText("Paint an area, then Fit")
+            if not keep_fit_status:
+                self.status.setText("Paint an area, then Fit")
             return
         self.update_button.setEnabled(True)
         self.rotation.setEnabled(True)
         self.rotation_degrees.setEnabled(True)
         if identity == self._selected_identity:
             return
+        self._cancel_live_update()
         self._selected_identity = identity
         self._loading = True
         try:
             self.load_selected()
-            self.status.setText("Editing selected text mask")
+            if not keep_fit_status:
+                self.status.setText("Editing selected text mask")
         finally:
             self._loading = False
 
-    def _auto_size_changed(self, enabled):
-        self.size.setEnabled(not enabled)
-        self.size_slider.setEnabled(not enabled)
-
     def _size_slider_changed(self, value):
         controls.silently(self.size, controls.size_from_slider(value))
+        if not self._loading:
+            self._size_dirty = True
 
     def _size_number_changed(self, value):
         controls.silently(self.size_slider, controls.slider_from_size(value))
+        if not self._loading:
+            self._size_dirty = True
 
     def _filter(self, text):
         previous = self.font.currentData()
-        self.font.clear()
-        for i, res in enumerate(self.resources):
-            name = res.gui_name()
-            if text.casefold() in name.casefold():
-                self.font.addItem(name, i)
-        if previous is not None:
-            index = self.font.findData(previous)
-            if index >= 0:
+        blocked = self.font.blockSignals(True)
+        try:
+            self.font.clear()
+            for i, res in enumerate(self.resources):
+                name = res.gui_name()
+                if text.casefold() in name.casefold():
+                    self.font.addItem(name, i)
+            if previous is not None:
+                index = self.font.findData(previous)
                 self.font.setCurrentIndex(index)
+            elif self._selected_identity is not None:
+                self.font.setCurrentIndex(-1)
+        finally:
+            self.font.blockSignals(blocked)
 
     def _selected_source(self):
         _stack, node = selected_single_layer()
@@ -109,6 +191,15 @@ class Panel(QtWidgets.QWidget):
                          "Old Base Color text fill layers are not paintable text masks.")
 
     def load_selected(self):
+        self._cancel_live_update()
+        loading = self._loading
+        self._loading = True
+        try:
+            self._load_selected()
+        finally:
+            self._loading = loading
+
+    def _load_selected(self):
         try:
             node, source = self._selected_source()
             self.search.clear()
@@ -121,9 +212,10 @@ class Panel(QtWidgets.QWidget):
                     self.font.setCurrentIndex(idx)
             params = source.get_parameters()
             self.text.setPlainText(params.text or "")
-            self.auto_size.setChecked(params.auto_size)
-            if params.size is not None:
-                self.size.setValue(params.size)
+            metadata = sp.project.Metadata("MBToolkit_3DPainter.font_sizing")
+            state = read_state(metadata, metadata_key(active_stack(), node.uid()))
+            self.size.setValue(state[1] if state else 0)
+            self._size_dirty = False
             h = self.halign.findText(params.horizontal_alignment.name)
             if h >= 0:
                 self.halign.setCurrentIndex(h)
@@ -169,7 +261,9 @@ class Panel(QtWidgets.QWidget):
             node, params = self._selected_uv_projection()
             original = deepcopy(params)
             self._remember_transform(node, original)
-            params.uv_transformation.rotation = degrees % 360
+            uv = params.uv_transformation
+            uv.rotation = degrees % 360
+            params.uv_transformation = uv
             node.set_projection_parameters(params)
             self._set_rotation_controls(degrees)
         except Exception as exc:
@@ -192,6 +286,7 @@ class Panel(QtWidgets.QWidget):
             scale = list(uv.scale)
             scale[axis] = -scale[axis]
             uv.scale = scale
+            params.uv_transformation = uv
             node.set_projection_parameters(params)
         except Exception as exc:
             exc = self._restore_failed_transform(node, original, exc)
@@ -223,6 +318,7 @@ class Panel(QtWidgets.QWidget):
                 uv.rotation = 0
                 if uv.scale is not None:
                     uv.scale = [abs(value) for value in uv.scale]
+                params.uv_transformation = uv
             node.set_projection_parameters(params)
             self._set_rotation_controls(params.uv_transformation.rotation or 0)
         except Exception as exc:
@@ -232,9 +328,7 @@ class Panel(QtWidgets.QWidget):
         if params is None:
             params = source.get_parameters()
         params.text = self.text.toPlainText()
-        params.auto_size = self.auto_size.isChecked()
-        if not params.auto_size:
-            params.size = self.size.value()
+        params.auto_size = True
         params.horizontal_alignment = getattr(sp.source.HorizontalAlignment, self.halign.currentText())
         params.line_spacing = self.line_spacing.value()
         params.character_spacing = self.char_spacing.value()
@@ -264,8 +358,23 @@ class Panel(QtWidgets.QWidget):
             error(self, "Prepare text area", exc)
 
     def fit_painted_area(self):
+        if self._loading or self._updating or self._disposed:
+            self.status.setText("Fit unavailable: panel closed" if self._disposed
+                                else "Fit busy: wait for the current update, then retry")
+            return
+        diagnostics = FitDiagnostics()
+        self._fit_result_selection = None
+        self.status.setToolTip("")
+        self.status.setText("Fit: checking selection…")
+        self.status.repaint()
+        self._cancel_live_update()
+        self._selection_timer.stop()
+        self._updating = True
+        self._loading = True
         layer = None
         added_mask = False
+        saved_projection = None
+        effect = None
         try:
             if not self.text.toPlainText().strip():
                 raise ValueError("Enter non-empty text before fitting a text mask")
@@ -276,54 +385,186 @@ class Panel(QtWidgets.QWidget):
             if index is None:
                 raise ValueError("Choose an available Painter font first")
             stack, layer = selected_single_layer()
+            if isinstance(layer, sp.layerstack.FillEffectNode):
+                layer = layer.get_parent()
+            if layer is None:
+                raise ValueError("Select the painted area's paint layer before fitting")
+            self._fit_result_selection = (str(stack), layer.uid())
+            diagnostics.record(stack=str(stack), layer=layer.uid())
             if not isinstance(layer, sp.layerstack.PaintLayerNode):
                 raise ValueError("Select the painted area's paint layer before fitting")
             if layer.has_mask():
-                raise ValueError("Fit requires an unmasked paint layer so existing masks are never replaced. "
-                                 "Select the text layer and use Update text for previously fitted text.")
-            bounds = measure_paint_bounds(stack, layer)
+                effects = list(layer.mask_effects())
+                if (len(effects) != 1 or not isinstance(effects[0], sp.layerstack.FillEffectNode)
+                        or effects[0].get_name() != "MB Text Mask"
+                        or not isinstance(effects[0].get_source(), sp.source.SourceFont)):
+                    raise ValueError("Refit requires a single MB Text Mask effect. Existing custom masks "
+                                     "are never replaced; select an unmasked paint layer for a new fit.")
+                effect = effects[0]
+                if effect.get_projection_mode() != sp.layerstack.ProjectionMode.UV:
+                    raise ValueError("Refit supports UV-projected text masks only")
+                saved_projection = deepcopy(effect.get_projection_parameters())
+            self.status.setText("Fit: measuring painted coverage…")
+            self.status.repaint()
+            capture = []
+            try:
+                bounds = measure_paint_bounds(stack, layer, capture=capture)
+            finally:
+                if capture:
+                    diagnostics.image("coverage", capture[0])
+            diagnostics.record(paint_bounds=list(bounds))
+            current_stack, current_layer = selected_single_layer()
+            if (str(current_stack) != str(stack) or current_layer is None
+                    or current_layer.uid() not in (layer.uid(), effect.uid() if effect else layer.uid())):
+                raise ValueError("Selection changed while measuring the painted area")
             scale, offset = placement_transform(bounds)
-            layer.add_mask(sp.layerstack.MaskBackground.Black)
-            added_mask = True
-            effect = sp.layerstack.insert_fill(sp.layerstack.InsertPosition.inside_node(
-                layer, sp.layerstack.NodeStack.Mask))
-            effect.set_name("MB Text Mask")
-            source = effect.set_source(None, self.resources[index].identifier())
-            self._apply_params(source)
-            params = source.get_parameters()
-            params.auto_size = True
-            params.horizontal_alignment = sp.source.HorizontalAlignment.Center
-            params.vertical_alignment = sp.source.VerticalAlignment.Middle
-            params.offset = (0, 0)
-            source.set_parameters(params)
-            effect.set_projection_mode(sp.layerstack.ProjectionMode.UV)
-            effect.set_projection_parameters(sp.layerstack.UVProjectionParams(
-                uv_wrapping_mode=sp.layerstack.UVWrapMode.RepeatNone,
-                uv_transformation=sp.layerstack.UVTransformationParams(
-                    scale_mode=sp.layerstack.ScaleMode.Factors, scale=scale, rotation=0, offset=offset)))
+            self.status.setText("Fit: rendering text mask…")
+            self.status.repaint()
+            if effect is None:
+                layer.add_mask(sp.layerstack.MaskBackground.Black)
+                added_mask = True
+                effect = sp.layerstack.insert_fill(sp.layerstack.InsertPosition.inside_node(
+                    layer, sp.layerstack.NodeStack.Mask))
+                effect.set_name("MB Text Mask")
+                source = effect.set_source(None, self.resources[index].identifier())
+                self._apply_params(source)
+                params = source.get_parameters()
+                params.auto_size = True
+                params.horizontal_alignment = sp.source.HorizontalAlignment.Center
+                params.vertical_alignment = sp.source.VerticalAlignment.Middle
+                params.offset = (0, 0)
+                source.set_parameters(params)
+                effect.set_projection_mode(sp.layerstack.ProjectionMode.UV)
+                projection = sp.layerstack.UVProjectionParams(
+                    uv_wrapping_mode=sp.layerstack.UVWrapMode.RepeatNone,
+                    uv_transformation=sp.layerstack.UVTransformationParams(
+                        scale_mode=sp.layerstack.ScaleMode.Factors, scale=scale, rotation=0, offset=offset))
+            else:
+                # Refit only placement, preserving the actual source, rotation and mirrors.
+                projection = deepcopy(saved_projection)
+                uv = projection.uv_transformation
+                if uv.scale_mode != sp.layerstack.ScaleMode.Factors:
+                    raise ValueError("Refit requires UV Tiling scale mode")
+                uv.scale = [(-v if old < 0 else v) for v, old in zip(scale, uv.scale)]
+                uv.offset = offset
+                projection.uv_transformation = uv
+            effect.set_projection_parameters(projection)
+            sp.layerstack.set_selected_nodes([layer])
+            self.status.setText("Fit: verifying text position and paint overlap…")
+            self.status.repaint()
+            verify_placement(stack, layer, effect, bounds, capture[0], diagnostics=diagnostics)
+            if saved_projection is not None:
+                metadata = sp.project.Metadata("MBToolkit_3DPainter.font_sizing")
+                fitted = effect.get_projection_parameters().uv_transformation.scale
+                write_state(metadata, metadata_key(stack, effect.uid()), (list(fitted), 0))
             sp.layerstack.set_selected_nodes([layer])
             sp.layerstack.set_selection_type(layer, sp.layerstack.SelectionType.Content)
-            self.halign.setCurrentIndex(self.halign.findText("Center"))
-            self.auto_size.setChecked(True)
+            if saved_projection is None:
+                self.halign.setCurrentIndex(self.halign.findText("Center"))
+            self.size.setValue(0)
+            self._size_dirty = False
+            # Clear session-only transform reset state after fitting a new baseline.
+            if hasattr(self, "_transform_originals"):
+                self._transform_originals.pop(effect.uid(), None)
+            self.status.setText("Text placement verified")
+            diagnostics.record(result="verified")
         except Exception as exc:
+            if saved_projection is not None:
+                try:
+                    effect.set_projection_parameters(saved_projection)
+                except Exception as restore_exc:
+                    exc = RuntimeError(f"{exc}. Could not restore prior text placement: {restore_exc}")
             if added_mask:
                 try:
                     layer.remove_mask()
                 except Exception as cleanup_exc:
                     exc = RuntimeError(f"{exc}. Could not remove incomplete mask: {cleanup_exc}")
+            self.status.setText("Fit failed: " + str(exc))
+            self.status.setToolTip(str(exc))
+            diagnostics.record(result="failed", error=str(exc))
             error(self, "Fit text to painted area", exc)
+        finally:
+            self._loading = False
+            self._updating = False
+            self.request_refresh()
 
     def update_selected(self):
+        self._cancel_live_update()
+        if self._loading or self._updating or self._disposed:
+            return
         try:
             if not self.text.toPlainText().strip():
                 raise ValueError("Enter non-empty text before updating a text mask")
             node, source = self._selected_source()
-            params = source.get_parameters()
-            index = self.font.currentData()
-            if index is not None:
-                wanted = self.resources[index].identifier()
-                if source.resource_id != wanted:
-                    source = node.set_source(None, wanted)
-            self._apply_params(source, params)
+            if (str(active_stack()), node.uid()) != self._selected_identity:
+                self.request_refresh()
+                raise ValueError("Selection changed; wait for the selected text mask to load before updating")
+            self._updating = True
+            self._write_selected(node, source)
+            self.status.setText("Text mask updated")
+            self.status.setToolTip("")
         except Exception as exc:
             error(self, "Update text mask", exc)
+        finally:
+            self._updating = False
+
+    def _write_selected(self, node, source):
+        original = None
+        state = None
+        if self._size_dirty:
+            if node.get_projection_mode() != sp.layerstack.ProjectionMode.UV:
+                raise ValueError("Relative size supports UV-projected text masks only")
+            original = node.get_projection_parameters()
+            if original.uv_transformation.scale_mode != sp.layerstack.ScaleMode.Factors:
+                raise ValueError("Relative size requires UV Tiling scale mode")
+            metadata = sp.project.Metadata("MBToolkit_3DPainter.font_sizing")
+            key = metadata_key(active_stack(), node.uid())
+            projection, state = scaled_projection(original, self.size.value(), read_state(metadata, key))
+        params = source.get_parameters()
+        index = self.font.currentData()
+        if index is not None:
+            wanted = self.resources[index].identifier()
+            if source.resource_id != wanted:
+                source = node.set_source(None, wanted)
+        try:
+            if state is not None:
+                node.set_projection_parameters(projection)
+            self._apply_params(source, params)
+            if state is not None:
+                write_state(metadata, key, state)
+        except Exception:
+            if original is not None:
+                node.set_projection_parameters(original)
+            raise
+        if state is not None:
+            self._size_dirty = False
+
+    def make_stencil(self):
+        """Read inputs only; generation never invokes the text-mask update path."""
+        if self._disposed:
+            return
+        from .stencil import create_stencil
+        loading = self._loading
+        self._loading = True
+        self.stencil_button.setEnabled(False)
+        try:
+            index = self.font.currentData()
+            if index is None:
+                raise ValueError("Choose an available Painter font first")
+            if not self.text.toPlainText().strip():
+                raise ValueError("Enter non-empty text before making a stencil")
+            if not sp.project.is_open():
+                raise ValueError("Open a Painter project before making a stencil")
+            resource = create_stencil(self.resources[index], self.text.toPlainText(),
+                                      self.line_spacing.value(), self.char_spacing.value())
+            self.status.setText("Stencil created — drag the alpha from Assets to the Stencil slot")
+            try:
+                resource.show_in_ui()
+                self.status.setToolTip("")
+            except Exception as exc:
+                self.status.setToolTip("Alpha imported, but could not reveal it in Assets: " + str(exc))
+        except Exception as exc:
+            error(self, "Make stencil", exc)
+        finally:
+            self._loading = loading
+            self.stencil_button.setEnabled(True)

@@ -265,7 +265,7 @@ def test_pie_feature_rename_and_default_reset(host_modules, name, expected):
 def test_pie_custom_names_follow_reorder_and_removal(host_modules):
     module = importlib.import_module("MBToolkit_3DPainter.features.pie_menus.editor")
     menu = {"actions": ["a", "b"], "action_names": ["First", "Second"]}
-    editor = SimpleNamespace(current=0, menus=[menu], actions=Mock())
+    editor = SimpleNamespace(current=0, menus=[menu], actions=Mock(), update_preview=Mock())
     editor.action_names = lambda: module.Editor.action_names(editor)
     editor.actions.currentRow.return_value = 0
     module.Editor.move_action(editor, 1)
@@ -319,7 +319,7 @@ def test_pie_selection_loads_shortcut_without_committing_partial_ui(host_modules
         menus=[{"name": "Second", "shortcut": "Ctrl+2", "actions": ["action"]}],
         commit_current=Mock(), name=Mock(), keyedit=keyedit, actions=Mock(),
         catalog=Mock(), app=SimpleNamespace(commands=SimpleNamespace(catalog=list)),
-        label=lambda command: command, append_action_item=Mock())
+        label=lambda command: command, append_action_item=Mock(), command_catalog=list, update_preview=Mock())
     module.Editor.select_menu(editor, 0)
     assert keyedit.method_calls == [
         ("setEnabled", (True,), {}), ("blockSignals", (True,), {}),
@@ -333,7 +333,9 @@ def test_empty_font_text_does_not_create_layer(host_modules, monkeypatch, text):
     create_layer = Mock()
     report = Mock()
     monkeypatch.setattr(module, "error", report)
-    panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: text))
+    panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: text),
+                            _loading=False, _updating=False, _disposed=False, _cancel_live_update=Mock(),
+                            _selection_timer=Mock(), request_refresh=Mock(), status=Mock())
     module.Panel.fit_painted_area(panel)
     create_layer.assert_not_called()
     assert isinstance(report.call_args.args[2], ValueError)
@@ -366,7 +368,7 @@ def test_text_panel_has_no_obsolete_create_action(host_modules):
     assert not hasattr(module.Panel, "create")
 
 
-@pytest.mark.parametrize("value", [0.001, 0.01, 0.1, 1, 10, 100])
+@pytest.mark.parametrize("value", [-1, -.5, 0, .5, 1])
 def test_manual_size_slider_mapping(host_modules, value):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.controls")
     assert module.size_from_slider(module.slider_from_size(value)) == pytest.approx(value)
@@ -377,7 +379,8 @@ def test_text_selection_sync_loads_once_and_preserves_pending_edits(host_modules
     node = Mock()
     node.uid.return_value = 42
     monkeypatch.setattr(module, "active_stack", lambda: "stack")
-    panel = SimpleNamespace(_loading=False, _selected_identity=None,
+    panel = SimpleNamespace(_loading=False, _updating=False, _disposed=False,
+                            _cancel_live_update=Mock(), _selected_identity=None,
                             _selected_source=lambda: (node, Mock()), load_selected=Mock(),
                             update_button=Mock(), rotation=Mock(), rotation_degrees=Mock(), status=Mock())
     module.Panel._sync_selection(panel)
@@ -395,16 +398,47 @@ def test_text_selection_sync_loads_once_and_preserves_pending_edits(host_modules
     panel.update_button.setEnabled.assert_called_with(False)
 
 
+@pytest.mark.parametrize("flag", ["_loading", "_updating", "_disposed"])
+def test_fit_busy_guards_report_status(host_modules, flag):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    panel = SimpleNamespace(_loading=False, _updating=False, _disposed=False, status=Mock())
+    setattr(panel, flag, True)
+    module.Panel.fit_painted_area(panel)
+    assert "Fit" in panel.status.setText.call_args.args[0]
+
+
+@pytest.mark.parametrize("has_source", [False, True])
+def test_fit_result_survives_selection_refresh(host_modules, monkeypatch, has_source):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    layer, source = Mock(), Mock()
+    layer.uid.return_value = 42
+    source.uid.return_value = 43
+    monkeypatch.setattr(module, "selected_single_layer", lambda: ("stack", layer))
+    monkeypatch.setattr(module, "active_stack", lambda: "stack")
+    def selected_source():
+        if not has_source:
+            raise ValueError("No text mask")
+        return source, Mock()
+    panel = SimpleNamespace(_loading=False, _updating=False, _disposed=False,
+                            _fit_result_selection=("stack", 42), _selected_identity=None,
+                            _selected_source=selected_source, _cancel_live_update=Mock(),
+                            update_button=Mock(), rotation=Mock(), rotation_degrees=Mock(),
+                            status=Mock(), load_selected=Mock())
+    module.Panel._sync_selection(panel)
+    panel.status.setText.assert_not_called()
+    layer.uid.return_value = 44
+    module.Panel._sync_selection(panel)
+    assert panel._fit_result_selection is None
+
+
 def test_manual_size_slider_sync_does_not_write_painter(host_modules):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
-    panel = SimpleNamespace(size=Mock(), size_slider=Mock())
+    panel = SimpleNamespace(size=Mock(), size_slider=Mock(), _loading=False)
     module.Panel._size_slider_changed(panel, 400)
-    panel.size.setValue.assert_called_once_with(pytest.approx(0.1))
+    panel.size.setValue.assert_called_once_with(pytest.approx(0.4))
     module.Panel._size_number_changed(panel, 1)
-    panel.size_slider.setValue.assert_called_once_with(600)
-    module.Panel._auto_size_changed(panel, True)
-    panel.size.setEnabled.assert_called_once_with(False)
-    panel.size_slider.setEnabled.assert_called_once_with(False)
+    panel.size_slider.setValue.assert_called_once_with(1000)
+    assert panel._size_dirty
 
 
 def test_text_mask_params_are_white_on_opaque_black(host_modules):
@@ -415,7 +449,6 @@ def test_text_mask_params_are_white_on_opaque_black(host_modules):
     source = Mock()
     source.get_parameters.return_value = params
     panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: "Text"),
-                            auto_size=SimpleNamespace(isChecked=lambda: True),
                             halign=SimpleNamespace(currentText=lambda: "Left"),
                             line_spacing=SimpleNamespace(value=lambda: 1.2),
                             char_spacing=SimpleNamespace(value=lambda: 0.1))
@@ -464,10 +497,11 @@ def test_text_mask_update_preserves_existing_params_and_effect(host_modules, mon
     resource.identifier.return_value = "new" if change_font else "old"
     panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: "Updated"),
                             _selected_source=lambda: (effect, source),
-                            font=SimpleNamespace(currentData=lambda: 0), resources=[resource], _apply_params=Mock())
+                            font=SimpleNamespace(currentData=lambda: 0), resources=[resource], _apply_params=Mock(),
+                            _size_dirty=False)
     report = Mock()
     monkeypatch.setattr(module, "error", report)
-    module.Panel.update_selected(panel)
+    module.Panel._write_selected(panel, effect, source)
     panel._apply_params.assert_called_once_with(replacement if change_font else source, params)
     if change_font:
         effect.set_source.assert_called_once_with(None, "new")
@@ -479,12 +513,142 @@ def test_text_mask_update_preserves_existing_params_and_effect(host_modules, mon
 
 def test_empty_text_mask_update_does_not_touch_selection(host_modules, monkeypatch):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
-    panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: "  "), _selected_source=Mock())
+    panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: "  "), _selected_source=Mock(),
+                            _cancel_live_update=Mock(), _loading=False, _updating=False, _disposed=False)
     report = Mock()
     monkeypatch.setattr(module, "error", report)
     module.Panel.update_selected(panel)
     panel._selected_source.assert_not_called()
     assert isinstance(report.call_args.args[2], ValueError)
+
+
+@pytest.mark.parametrize("font_context", ["starter_assets", "project1", "session"])
+@pytest.mark.parametrize("failure", [None, "source", "coverage", "text_export", "cleanup"])
+def test_stencil_native_font_resources_and_cleanup(host_modules, monkeypatch, font_context, failure, tmp_path):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.stencil")
+    class Layer:
+        pass
+    selected = Layer()
+    scratch, effect, source = Mock(), Mock(), Mock()
+    params = SimpleNamespace()
+    source.get_parameters.return_value = params
+    effect.set_source.return_value = source
+    effect.get_projection_parameters.return_value = SimpleNamespace(
+        uv_transformation=SimpleNamespace(scale=[1.25, 1.25]))
+    api = SimpleNamespace(insert_fill=Mock(side_effect=[scratch, effect]),
+        InsertPosition=SimpleNamespace(from_textureset_stack=lambda stack: "root", inside_node=lambda *args: "mask"),
+        MaskBackground=SimpleNamespace(Black="black"), NodeStack=SimpleNamespace(Mask="mask"),
+        ProjectionMode=SimpleNamespace(UV="uv"), UVWrapMode=SimpleNamespace(RepeatNone="none"),
+        ScaleMode=SimpleNamespace(Factors="factors"), UVProjectionParams=lambda **kw: kw,
+        UVTransformationParams=lambda **kw: kw, delete_node=Mock(), LayerNode=Layer,
+        get_selected_nodes=Mock(return_value=[selected]), get_selection_type=Mock(return_value="content"),
+        set_selected_nodes=Mock(), set_selection_type=Mock())
+    host_modules.layerstack = api
+    host_modules.textureset = SimpleNamespace(get_active_stack=lambda: "stack")
+    host_modules.colormanagement = SimpleNamespace(Color=lambda *rgb: rgb)
+    host_modules.source = SimpleNamespace(HorizontalAlignment=SimpleNamespace(Center="center"),
+        VerticalAlignment=SimpleNamespace(Middle="middle"), ResolutionMode=SimpleNamespace(Custom="custom"),
+        ResolutionOverride=lambda *args: args)
+    if failure == "source":
+        effect.set_source.side_effect = RuntimeError("source failed")
+    exports = []
+    def export(layer, path):
+        assert layer is scratch
+        exports.append(params.text)
+        if failure == "text_export" and len(exports) == 2:
+            raise RuntimeError("export failed")
+        path.touch()
+        return "coverage" if len(exports) == 1 else "letters"
+    monkeypatch.setattr(module, "export_mask", export)
+    verify = Mock(side_effect=ValueError("coverage failed") if failure == "coverage" else None)
+    monkeypatch.setattr(module, "verify_full_coverage", verify)
+    monkeypatch.setattr(module, "place_stencil_source", Mock(side_effect=ValueError("no usable coverage")))
+    monkeypatch.setattr(module, "centered_image", lambda image: "centered")
+    if failure == "cleanup":
+        api.delete_node.side_effect = RuntimeError("cleanup failed")
+    identifier = SimpleNamespace(context=font_context, name="font")
+    resource = SimpleNamespace(identifier=lambda: identifier)
+    if failure:
+        with pytest.raises((ValueError, RuntimeError)):
+            module.render_text(resource, "Exact text", 1.2, .1)
+    else:
+        assert module.render_text(resource, "Exact text", 1.2, .1) == "centered"
+        assert exports == ["Exact text", "Exact text"]
+        assert params.horizontal_alignment == "center" and params.vertical_alignment == "middle"
+        assert params.background_color == (0, 0, 0) and params.color == (1, 1, 1)
+        assert params.line_spacing == 1.2 and params.character_spacing == .1
+        verify.assert_called_once_with("coverage")
+    effect.set_source.assert_called_once_with(None, identifier)
+    api.delete_node.assert_called_once_with(scratch)
+    api.set_selected_nodes.assert_called_once_with([selected])
+    api.set_selection_type.assert_called_once_with(selected, "content")
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_relative_size_controller_applies_and_rolls_back(host_modules, monkeypatch, fail):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    data = {}
+    metadata = SimpleNamespace(list=lambda: list(data), get=data.__getitem__, set=data.__setitem__)
+    host_modules.project = SimpleNamespace(Metadata=lambda context: metadata)
+    host_modules.layerstack = SimpleNamespace(ProjectionMode=SimpleNamespace(UV="uv"),
+                                              ScaleMode=SimpleNamespace(Factors="factors"))
+    monkeypatch.setattr(module, "active_stack", lambda: "stack")
+    original = SimpleNamespace(uv_transformation=SimpleNamespace(
+        scale=[-2., 4.], offset=[.2, -.1], rotation=30, scale_mode="factors"))
+    node, source = Mock(), Mock(resource_id="font")
+    node.uid.return_value = 42
+    node.get_projection_mode.return_value = "uv"
+    node.get_projection_parameters.return_value = original
+    panel = SimpleNamespace(_size_dirty=True, size=SimpleNamespace(value=lambda: 1),
+                            font=SimpleNamespace(currentData=lambda: None), _apply_params=Mock())
+    if fail:
+        panel._apply_params.side_effect = RuntimeError("Write failed")
+        with pytest.raises(RuntimeError):
+            module.Panel._write_selected(panel, node, source)
+        assert node.set_projection_parameters.call_args.args[0] is original
+        assert not data and panel._size_dirty
+    else:
+        module.Panel._write_selected(panel, node, source)
+        projection = node.set_projection_parameters.call_args.args[0]
+        assert projection.uv_transformation.scale == [-.5, 1.]
+        assert projection.uv_transformation.offset == [.2, -.1]
+        assert projection.uv_transformation.rotation == 30
+        assert data and not panel._size_dirty
+
+
+@pytest.mark.parametrize("guard", ["_loading", "_updating", "_disposed", "manual", "empty", "no_identity"])
+def test_font_live_queue_guards_prevent_writes(host_modules, guard):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    panel = SimpleNamespace(_loading=False, _updating=False, _disposed=False,
+                            live_update=SimpleNamespace(isChecked=lambda: guard != "manual"),
+                            text=SimpleNamespace(toPlainText=lambda: " " if guard == "empty" else "Text"),
+                            _selected_identity=None if guard == "no_identity" else ("stack", 42),
+                            _cancel_live_update=Mock(), _selected_source=Mock(), _update_timer=Mock())
+    if guard.startswith("_"):
+        setattr(panel, guard, True)
+    module.Panel._queue_live_update(panel)
+    panel._selected_source.assert_not_called()
+    panel._update_timer.start.assert_not_called()
+
+
+@pytest.mark.parametrize("changed", ["node", "stack", "loaded_identity"])
+def test_font_live_flush_revalidates_target(host_modules, monkeypatch, changed):
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
+    node, source = Mock(), Mock()
+    node.uid.return_value = 99 if changed == "node" else 42
+    monkeypatch.setattr(module, "active_stack", lambda: "other" if changed == "stack" else "stack")
+    panel = SimpleNamespace(_pending_identity=("stack", 42), _cancel_live_update=Mock(),
+                            _selected_identity=("stack", 99 if changed == "loaded_identity" else 42),
+                            _disposed=False, _loading=False, _updating=False,
+                            live_update=SimpleNamespace(isChecked=lambda: True),
+                            text=SimpleNamespace(toPlainText=lambda: "Text"),
+                            _selected_source=lambda: (node, source), request_refresh=Mock(),
+                            _write_selected=Mock(), status=Mock())
+    module.Panel._flush_live_update(panel)
+    panel._write_selected.assert_not_called()
+    panel._cancel_live_update.assert_called_once()
+    panel.request_refresh.assert_called_once()
+    assert not panel._updating
 
 
 @pytest.mark.parametrize("case", ["success", "missing_channel", "no_project", "selection_failure", "cleanup_failure"])
@@ -685,21 +849,74 @@ def test_paint_coverage_bounds_and_uv_transform(host_modules):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.placement")
     image = SimpleNamespace(isNull=lambda: False, width=lambda: 10, height=lambda: 10,
                             pixelColor=lambda x, y: SimpleNamespace(
-                                red=lambda: 255 if 2 <= x <= 5 and 1 <= y <= 4 else 0))
+                                red=lambda: 255 if 2 <= x <= 5 and 1 <= y <= 4 else 0, alpha=lambda: 255))
     bounds = module.coverage_bounds(image)
     assert bounds == pytest.approx((0.2, 0.5, 0.6, 0.9))
     scale, offset = module.placement_transform(bounds)
     assert scale == pytest.approx([3.125, 3.125])
     assert offset == pytest.approx([-0.1, 0.2])
-    image.pixelColor = lambda x, y: SimpleNamespace(red=lambda: 0)
+    image.pixelColor = lambda x, y: SimpleNamespace(red=lambda: 0, alpha=lambda: 255)
     with pytest.raises(ValueError, match="No Base Color"):
         module.coverage_bounds(image)
-    image.pixelColor = lambda x, y: SimpleNamespace(red=lambda: 255)
+    image.pixelColor = lambda x, y: SimpleNamespace(red=lambda: 255, alpha=lambda: 255)
     with pytest.raises(ValueError, match="every image edge"):
         module.coverage_bounds(image)
     image.width = lambda: 2048
     with pytest.raises(ValueError, match="oversized"):
         module.coverage_bounds(image)
+
+
+@pytest.mark.parametrize("failure", [None, "readback", "stale", "selection", "outside", "overlap"])
+def test_fit_verification_exports_real_mask_and_restores_failures(host_modules, monkeypatch, failure):
+    import json
+    from copy import deepcopy
+    module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.placement")
+    layer, effect = Mock(), Mock()
+    layer.uid.return_value = 42
+    effect.uid.return_value = 43
+    original = SimpleNamespace(uv_transformation=SimpleNamespace(offset=[0., 0.], scale=[4., 4.]))
+    current = [deepcopy(original)]
+    def write(params):
+        current[0] = deepcopy(params)
+        if failure == "readback":
+            current[0].uv_transformation.offset = [0., 0.]
+    effect.set_projection_parameters.side_effect = write
+    effect.get_projection_parameters.side_effect = lambda: deepcopy(current[0])
+    host_modules.layerstack = SimpleNamespace(get_selected_nodes=lambda stack: [] if failure == "selection" else [layer])
+    host_modules.textureset = SimpleNamespace(get_active_stack=lambda: "stack")
+    exports = []
+    def export(code):
+        from pathlib import Path
+        args = json.loads("[" + code[len("alg.mapexport.save("):-1] + "]")
+        assert args[0] == [42, "mask"]
+        assert args[2]["resolution"] == [512, 512] and "dithering" not in args[2]
+        path = Path(args[1])
+        assert not path.exists()
+        path.write_bytes(b"mask")
+        exports.append(path)
+    host_modules.js = SimpleNamespace(evaluate=export)
+    monkeypatch.setattr(module.QtGui, "QImage", lambda path: SimpleNamespace(
+        isNull=lambda: False, width=lambda: 512, height=lambda: 512), raising=False)
+    def bounds(image):
+        offset = [0., 0.] if failure == "stale" else current[0].uv_transformation.offset
+        x, y = .5 - offset[0], .5 + offset[1]
+        radius = .2 if failure == "outside" else .025
+        return x - radius, y - radius, x + radius, y + radius
+    monkeypatch.setattr(module, "coverage_bounds", bounds)
+    paint = SimpleNamespace(width=lambda: 8, height=lambda: 8,
+                            pixelColor=lambda x, y: SimpleNamespace(red=lambda: 255, alpha=lambda: 255))
+    overlap = Mock(return_value=.5 if failure == "overlap" else 1.)
+    monkeypatch.setattr(module, "coverage_overlap", overlap)
+    diagnostics = Mock()
+    if failure:
+        with pytest.raises((ValueError, RuntimeError)):
+            module.verify_placement("stack", layer, effect, (.2, .6, .4, .8), paint, diagnostics)
+        assert current[0] == original
+    else:
+        result = module.verify_placement("stack", layer, effect, (.2, .6, .4, .8), paint, diagnostics)
+        assert result == pytest.approx([.2, .2])
+        assert overlap.call_args.args[0] is paint
+    assert all(not path.exists() for path in exports)
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -735,39 +952,47 @@ def test_coverage_export_restores_visibility_and_deletes_temp_files(host_modules
         assert parameters["dilationDistance"] == 0
         assert parameters["sizeLog2"] == 9
         assert parameters["fileFormat"] == "png"
+        # Python custom presets must resolve this boolean explicitly; the JS
+        # mask-export path deliberately omits its incompatible string option.
+        assert parameters["dithering"] is False
         (path / "coverage.png").write_bytes(b"temporary")
         if fail:
             raise RuntimeError("Export failed")
         return SimpleNamespace(status="success")
     host_modules.export = SimpleNamespace(export_project_textures=export, ExportStatus=SimpleNamespace(Success="success"))
-    monkeypatch.setattr(module.QtGui, "QImage", lambda path: "image", raising=False)
+    retained = object()
+    monkeypatch.setattr(module.QtGui, "QImage", lambda path: SimpleNamespace(copy=lambda: retained), raising=False)
     monkeypatch.setattr(module, "coverage_bounds", lambda image: (0.1, 0.2, 0.3, 0.4))
     if fail:
         with pytest.raises(RuntimeError, match="Export failed"):
             module.measure_paint_bounds(stack, layer)
     else:
-        assert module.measure_paint_bounds(stack, layer) == (0.1, 0.2, 0.3, 0.4)
+        capture = []
+        assert module.measure_paint_bounds(stack, layer, capture=capture) == (0.1, 0.2, 0.3, 0.4)
+        assert capture == [retained]
     assert layer.set_visible.call_args_list == [((True,), {}), ((False,), {})]
     assert sibling.set_visible.call_args_list == [((False,), {}), ((True,), {})]
     assert layer.enable_mask.call_args_list == [((False,), {}), ((True,), {})]
     assert folders and all(not path.exists() for path in folders)
 
 
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("fail", [False, True, "verification", "coverage"])
 def test_fit_painted_area_preserves_paint_and_cleans_incomplete_mask(host_modules, monkeypatch, fail):
     module = importlib.import_module("MBToolkit_3DPainter.features.font_tool.panel")
     class PaintLayer:
         pass
     layer = PaintLayer()
     layer.has_mask = lambda: False
+    layer.uid = lambda: 42
     layer.add_mask, layer.remove_mask = Mock(), Mock()
     effect, source, params = Mock(), Mock(), SimpleNamespace()
     effect.set_source.return_value = source
     source.get_parameters.return_value = params
-    if fail:
+    if fail is True:
         effect.set_projection_parameters.side_effect = RuntimeError("Projection failed")
     host_modules.layerstack = SimpleNamespace(
-        PaintLayerNode=PaintLayer, MaskBackground=SimpleNamespace(Black="black"),
+        PaintLayerNode=PaintLayer, FillEffectNode=type("FillEffect", (), {}),
+        MaskBackground=SimpleNamespace(Black="black"),
         insert_fill=Mock(return_value=effect), InsertPosition=SimpleNamespace(inside_node=Mock()),
         NodeStack=SimpleNamespace(Mask="mask"), ProjectionMode=SimpleNamespace(UV="uv"),
         UVWrapMode=SimpleNamespace(RepeatNone="none"), ScaleMode=SimpleNamespace(Factors="factors"),
@@ -776,15 +1001,34 @@ def test_fit_painted_area_preserves_paint_and_cleans_incomplete_mask(host_module
     host_modules.source = SimpleNamespace(HorizontalAlignment=SimpleNamespace(Center="center"),
                                           VerticalAlignment=SimpleNamespace(Middle="middle"))
     monkeypatch.setattr(module, "selected_single_layer", lambda: ("stack", layer))
-    monkeypatch.setattr(module, "measure_paint_bounds", lambda stack, layer: (0.2, 0.2, 0.6, 0.6))
+    paint = object()
+    def measure(stack, layer, capture):
+        capture.append(paint)
+        if fail == "coverage":
+            raise RuntimeError("Coverage export failed")
+        return (0.2, 0.2, 0.6, 0.6)
+    monkeypatch.setattr(module, "measure_paint_bounds", measure)
+    diagnostics = Mock()
+    monkeypatch.setattr(module, "FitDiagnostics", lambda: diagnostics)
+    verify = Mock()
+    if fail == "verification":
+        verify.side_effect = RuntimeError("Text did not converge")
+    monkeypatch.setattr(module, "verify_placement", verify)
     report = Mock()
     monkeypatch.setattr(module, "error", report)
     resource = Mock()
     panel = SimpleNamespace(text=SimpleNamespace(toPlainText=lambda: "Text"),
                             font=SimpleNamespace(currentData=lambda: 0), resources=[resource],
-                            _apply_params=Mock(), halign=Mock(), auto_size=Mock())
+                            _apply_params=Mock(), halign=Mock(), size=Mock(), status=Mock(),
+                            _loading=False, _updating=False, _disposed=False, _cancel_live_update=Mock(),
+                            _selection_timer=Mock(), request_refresh=Mock())
     module.Panel.fit_painted_area(panel)
-    if fail:
+    if fail == "coverage":
+        layer.add_mask.assert_not_called()
+        layer.remove_mask.assert_not_called()
+        diagnostics.image.assert_called_once_with("coverage", paint)
+        assert "Fit failed" in panel.status.setText.call_args.args[0]
+    elif fail:
         layer.remove_mask.assert_called_once()
         assert isinstance(report.call_args.args[2], RuntimeError)
     else:
@@ -793,7 +1037,12 @@ def test_fit_painted_area_preserves_paint_and_cleans_incomplete_mask(host_module
         assert params.auto_size is True
         assert params.vertical_alignment == "middle"
         assert params.offset == (0, 0)
+        verify.assert_called_once_with("stack", layer, effect, (0.2, 0.2, 0.6, 0.6), paint,
+                                       diagnostics=diagnostics)
         host_modules.layerstack.set_selection_type.assert_called_once_with(layer, "content")
+    assert not panel._loading and not panel._updating
+    panel._cancel_live_update.assert_called_once()
+    panel.request_refresh.assert_called_once()
 
 
 def test_event_start_is_idempotent_and_stop_retries_failures(host_modules):
@@ -931,3 +1180,24 @@ def test_blending_reset_uses_explicit_normal_and_full_opacity(host_modules):
     panel._set_mode.assert_called_once_with(None, "normal")
     panel._queue.assert_called_once_with(None, 100)
     panel._flush.assert_called_once()
+
+
+
+
+
+
+@pytest.mark.parametrize("selection", ["layer", "effect", "none", "multiple"])
+def test_insertion_resolves_effect_to_layer_and_preserves_parent_stack(host_modules, selection):
+    module = importlib.import_module("MBToolkit_3DPainter.adapters.painter")
+    class Layer:
+        pass
+    layer = Layer()
+    effect = SimpleNamespace(get_parent=lambda: layer)
+    selected = {"layer": [layer], "effect": [effect], "none": [], "multiple": [layer, layer]}[selection]
+    host_modules.layerstack = SimpleNamespace(LayerNode=Layer, get_selected_nodes=lambda stack: selected,
+        InsertPosition=SimpleNamespace(above_node=lambda node: ("above", node), from_textureset_stack=lambda stack: "top"))
+    if selection == "multiple":
+        with pytest.raises(ValueError, match="Select one"):
+            module.insertion_above_selection("stack")
+    else:
+        assert module.insertion_above_selection("stack") == ("top" if selection == "none" else ("above", layer))

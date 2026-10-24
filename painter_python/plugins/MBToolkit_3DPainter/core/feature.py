@@ -31,6 +31,8 @@ class DockFeature:
     def stop(self):
         if self.panel:
             self.app.events.remove(getattr(self.panel, "request_refresh", None))
+            if hasattr(self.panel, "dispose"):
+                self.panel.dispose()
             # Painter owns the dock and its content: only remove through Painter API.
             try:
                 sp.ui.delete_ui_element(self.panel)

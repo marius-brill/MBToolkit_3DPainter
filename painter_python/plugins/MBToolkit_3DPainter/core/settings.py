@@ -31,6 +31,12 @@ class Settings:
     def save(self):
         self.directory.mkdir(parents=True, exist_ok=True)
         data = clean_config(self.data)
+        if self.path.is_file():
+            previous = json.loads(self.path.read_text(encoding="utf-8"))
+            if previous.get("schema_version", 0) < data["schema_version"]:
+                backup = self.path.with_name("settings.pre-v2.json")
+                if not backup.exists():
+                    backup.write_text(json.dumps(previous, indent=2, ensure_ascii=False), encoding="utf-8")
         data["plugin_version_last_run"] = VERSION
         fd, name = tempfile.mkstemp(prefix=".mbt-", suffix=".tmp", dir=self.directory)
         try:
