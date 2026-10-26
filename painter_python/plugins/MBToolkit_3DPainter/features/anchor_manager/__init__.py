@@ -1,0 +1,1 @@
+"""Optional Anchor Manager. Domain modules do not require Painter or Qt."""

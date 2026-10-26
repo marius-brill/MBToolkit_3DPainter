@@ -20,6 +20,8 @@ def build_release(destination, root=None):
                 archive.write(path, (Path(NAME) / path.relative_to(runtime)).as_posix())
         for name in ("README.md", "LICENSE", "CHANGELOG.md"):
             archive.write(root / name, f"{NAME}/{name}")
+        archive.write(root / "docs" / "ANCHOR_MANAGER.md", f"{NAME}/docs/ANCHOR_MANAGER.md")
+        archive.write(root / "docs" / "LAYER_GRAPH.md", f"{NAME}/docs/LAYER_GRAPH.md")
     with ZipFile(destination) as archive:
         names = archive.namelist()
         if any(name.split("/")[0] != NAME for name in names) or f"{NAME}/__init__.py" not in names:

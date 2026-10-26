@@ -20,7 +20,9 @@ class Preferences(QtWidgets.QDialog):
         self.toggles = {}
         for fid, name in (("pie_menus", "Pie Menu Creator"),
                           ("channel_blending", "All-Channel Blending"),
-                          ("font_tool", "Font Tool")):
+                          ("font_tool", "Font Tool"),
+                          ("anchor_manager", "Anchor Manager"),
+                          ("layer_graph", "Layer Graph (Prototype)")):
             check = QtWidgets.QCheckBox(name)
             check.setChecked(app.settings.enabled(fid))
             check.toggled.connect(lambda enabled, id=fid: self.switch(id, enabled))

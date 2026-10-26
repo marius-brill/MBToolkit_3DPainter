@@ -44,6 +44,17 @@ Copy **`painter_python/plugins/MBToolkit_3DPainter/`** (the folder containing `_
 | Pie Menu Creator | Multiple radial pies, equal-angle clickable slices, mouse selection, per-menu shortcuts, command catalog, menu editor, opt-in trusted `.py` scripts | Implemented, host testing pending |
 | Channel Blending | Dockable per-channel blend mode + opacity controls; follows selected paint/fill layer | Implemented, host testing pending |
 | Font Tool | Paint-first Fit / Refit, editable live text masks, relative sizing, rotation/mirroring, and text stencil generation | Full implementation working and tested (user-confirmed); automated regressions included |
+| Anchor Manager | Optional searchable anchor library, per-input dependency graph, coverage-aware inspector, navigation and restricted safe editing | Local fake-host/offscreen Qt tested; Painter smoke testing pending |
+| Layer Graph | Optional node-first layer editing prototype: searchable creation, mask/effect subgraphs, group tabs, collapsible visual frames and channel inspector | Experimental; public-API double/offscreen Qt checks; live Painter acceptance pending |
+
+### Layer Graph prototype
+
+Enable **Layer Graph (Prototype)** in MBToolkit Preferences, then open it from the MBToolkit menu.
+Right-click / Tab to add nodes, double-click groups to open focused tabs, and use separate mask/content
+effect graphs to keep materials organized. Painter remains the rendering backend; wires reflect native
+composition order rather than unrestricted Designer-style dataflow. Layout is session-only and arbitrary
+rewiring/reordering is not implemented. See [Layer Graph guide](docs/LAYER_GRAPH.md) for controls, supported
+node families, limitations and the host acceptance checklist.
 
 ### Feature limitations
 
@@ -60,6 +71,14 @@ Copy **`painter_python/plugins/MBToolkit_3DPainter/`** (the folder containing `_
 5. Under **Preferences → Python Actions**, save a local `.py` file and explicitly enable trusted custom actions. Reopen the Pie Menu Editor to assign it.
 
 Settings are stored outside the installation in the OS-specific Painter user configuration directory (via Qt `QStandardPaths`). Use Preferences to export or import portable JSON.
+
+### Anchor Manager
+
+Enable **Preferences → Features → Anchor Manager** (off by default), then open **MBToolkit → Anchor Manager**.
+Browse the active texture set, search anchors, inspect known consumers, and double-click to navigate in Painter.
+Create/rename and restricted fill-reference replacement use previews/revalidation; deletion requires a complete zero-use scan.
+Partial coverage is intentional for unverified input categories: **0 known is not unused**.
+See [Anchor Manager capabilities, limitations and required Painter smoke checks](docs/ANCHOR_MANAGER.md).
 
 ### Paint-first text placement
 

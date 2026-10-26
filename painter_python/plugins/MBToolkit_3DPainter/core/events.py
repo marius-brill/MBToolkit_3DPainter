@@ -6,10 +6,12 @@ class EventBus:
     def __init__(self):
         self.listeners = set()
         self.connected = []
+        self.project_epoch = 0
 
     def start(self):
         connected_classes = {cls for cls, _callback in self.connected}
-        for event_name in ("LayerStacksModelDataChanged", "ProjectEditionEntered", "ProjectClosed"):
+        for event_name in ("LayerStacksModelDataChanged", "ProjectEditionEntered", "ProjectEditionLeft",
+                           "ProjectOpened", "ProjectCreated", "ProjectClosed"):
             event_cls = getattr(sp.event, event_name, None)
             if event_cls and event_cls not in connected_classes:
                 callback = self._notify
@@ -24,6 +26,8 @@ class EventBus:
         self.listeners.discard(callback)
 
     def _notify(self, _event):
+        if type(_event).__name__ in ("ProjectOpened", "ProjectCreated", "ProjectClosed"):
+            self.project_epoch += 1
         for callback in tuple(self.listeners):
             try:
                 callback()

@@ -11,3 +11,9 @@
 - Settings locations and scripts: Qt's `QStandardPaths.AppConfigLocation`; no fixed drives or user home folders.
 
 See [MANUAL_TESTS.md](MANUAL_TESTS.md) for the release criteria.
+
+## Anchor Manager
+
+Installed 11.0.3 / API 0.3.4 wrappers were inspected on October 24, 2026; interactive host testing remains pending.
+The optional feature uses runtime gates, and deliberately reports partial usage coverage for unverified inputs.
+See [ANCHOR_MANAGER.md](ANCHOR_MANAGER.md) for the per-operation matrix, known gaps, local tests and required host checklist.

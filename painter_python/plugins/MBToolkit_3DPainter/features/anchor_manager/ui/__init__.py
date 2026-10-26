@@ -1,0 +1,1 @@
+"""Native Qt views. No direct Painter imports or calls."""

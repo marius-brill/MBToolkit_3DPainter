@@ -4,7 +4,8 @@ import pytest
 
 def test_default_features():
     config = default_settings()
-    assert set(config["features"]) == {"pie_menus", "channel_blending", "font_tool"}
+    assert set(config["features"]) == {"pie_menus", "channel_blending", "font_tool", "anchor_manager", "layer_graph"}
+    assert config["features"]["layer_graph"]["enabled"] is False
     assert "mb.performance" not in config["pie_menus"][0]["actions"]
     assert config["schema_version"] == 2
 

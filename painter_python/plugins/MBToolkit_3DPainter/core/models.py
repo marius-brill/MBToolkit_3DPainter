@@ -6,6 +6,8 @@ FEATURES = {
     "pie_menus": True,
     "channel_blending": True,
     "font_tool": True,
+    "anchor_manager": False,
+    "layer_graph": False,
 }
 MAX_PIE_ACTIONS = 12
 SAFE_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -20,6 +22,8 @@ def default_settings():
                        "actions": ["mb.blending", "mb.fonts", "mb.preferences"]}],
         "allow_custom_python": False,
         "macros": [],
+        "anchor_manager": {"auto_refresh": True, "filter": "All", "sort": "Name",
+                           "graph_mode": "Focus", "splitter": [], "zoom": 1.0, "expanded_geometry": ""},
     }
 
 
@@ -36,6 +40,25 @@ def clean_config(raw):
         if isinstance(item, dict) and isinstance(item.get("enabled"), bool):
             cfg["features"][feature]["enabled"] = item["enabled"]
     cfg["allow_custom_python"] = raw.get("allow_custom_python") is True
+    anchor = raw.get("anchor_manager", {})
+    if isinstance(anchor, dict):
+        options = cfg["anchor_manager"]
+        if isinstance(anchor.get("auto_refresh"), bool):
+            options["auto_refresh"] = anchor["auto_refresh"]
+        for key, values in (("filter", ("All", "Used", "Unused", "Issues")),
+                            ("sort", ("Name", "Uses", "Stack Order", "Source Type")),
+                            ("graph_mode", ("Focus", "Overview", "Issues"))):
+            if anchor.get(key) in values:
+                options[key] = anchor[key]
+        sizes = anchor.get("splitter")
+        if isinstance(sizes, list) and len(sizes) == 3 and all(type(s) is int and 0 <= s <= 10000 for s in sizes):
+            options["splitter"] = list(sizes)
+        zoom = anchor.get("zoom")
+        if type(zoom) in (int, float) and .25 <= zoom <= 2.5:
+            options["zoom"] = float(zoom)
+        geometry = anchor.get("expanded_geometry")
+        if isinstance(geometry, str) and len(geometry) <= 4096 and all(c in "0123456789abcdef" for c in geometry):
+            options["expanded_geometry"] = geometry
     macros = raw.get("macros", [])
     if not isinstance(macros, list):
         raise ValueError("Macros must be a list")
