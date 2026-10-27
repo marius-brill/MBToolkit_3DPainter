@@ -1,5 +1,45 @@
 # Automatic reorder investigation — October 26, 2026
 
+## October 27 follow-up: effect families and layer drag metadata
+
+Re-established remote access to Painter 11.0.3. With no project open, copied the
+bundled fixture into a unique `MBToolkit_General_Order_*` temporary directory.
+The disposable copy remains open with unsaved test changes; no user project was
+mutated. Production backend behavior and opt-in gates were not changed.
+
+`scripts/painter_general_order_test.py` provides guarded setup, selection,
+read-only drag metadata, and separate `effect_prepare` / `effect_move` phases.
+Preparation and execution must be separate remote calls so native action state
+can settle. Supply `domain` (`content` or `mask`) and `factory` in `init_globals`.
+The latest candidate is recorded in the temporary state file. Use only factories
+listed below; setup never overwrites an open project.
+
+All **12 live boundary-move cases passed**, including exact scanned chain and
+node-record equality after native Undo/Redo:
+
+- Content and mask: Levels, empty Filter, empty Generator, Fill Effect, Paint Effect.
+- Mask only: Color Selection and Compare Mask.
+- Each candidate was hidden before moving; UID, visibility, scope and other
+  scanned node records were preserved. This does not compare shader parameters,
+  strokes, populated resource behavior or rendered output exhaustively.
+- The driver retained all case outcomes in `%TEMP%/mb_effect_matrix.json`.
+
+An initial harness error chose the unchanged boundary and then undid a setup
+visibility change. The corrected harness asserts a real order change before
+invoking Undo; that failed attempt is not a production backend failure. A
+single-call setup/move attempt correctly failed closed on a disabled native action.
+
+For a selected layer, all four attached effect-order actions were disabled and
+no attached move-layer action was present. Layer panel metadata exposed no move
+method; `Alg::DragAndDropWidget` exposed only `onDragStarted()`, `onDragMoved()`
+and `onDragEnded()`, with no own properties. No UID-targeted drop interface was
+established. No synthetic drag, fabricated MIME or private C++ address was used.
+These observations do not prove that every possible native route is unavailable.
+
+**Still unresolved:** Fill/Paint/Instance/Group layer moves, reparenting,
+multi-step interior effect moves and undo grouping, anchors and dependency rules.
+The all-layer requirement remains incomplete.
+
 ## Follow-up: command experiment and partial prototype
 
 The following later tests supersede the initial read-only scope below. Copied the
@@ -38,8 +78,9 @@ Its setup refuses another project or an existing disposable file. A JSON report
 is written alongside the disposable project in the temporary directory.
 
 Automated planning/backend tests plus existing ordering tests: **31 passed**.
-Other effect families, anchors, instances, rendered output and other host versions
-remain unverified. The old cursor-based layer experiment remains separate.
+At that stage other effect families remained unverified (see October 27 above).
+Anchors, instances, rendered output and other host versions remain unverified.
+The old cursor-based layer experiment remains separate.
 
 ## Scope and actual live observations
 
