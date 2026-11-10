@@ -1,0 +1,1 @@
+"""View-only search for Painter's native Layers tree."""

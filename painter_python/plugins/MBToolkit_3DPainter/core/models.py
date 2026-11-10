@@ -1,14 +1,15 @@
 """Qt-free data models and validation for persistent settings."""
 import copy
 import re
+from .availability import available_prototypes
 
 FEATURES = {
     "pie_menus": True,
     "channel_blending": True,
     "font_tool": True,
-    "anchor_manager": False,
-    "layer_graph": False,
+    "layer_search": True,
 }
+FEATURES.update({fid: False for fid in available_prototypes()})
 MAX_PIE_ACTIONS = 12
 SAFE_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 

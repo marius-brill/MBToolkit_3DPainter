@@ -1,6 +1,6 @@
 """Preferences, JSON import/export and explicitly trusted local Python actions."""
 from PySide6 import QtCore, QtGui, QtWidgets
-from ..core.models import SAFE_NAME
+from ..core.models import FEATURES, SAFE_NAME
 from ..ui.common import error
 
 
@@ -21,8 +21,11 @@ class Preferences(QtWidgets.QDialog):
         for fid, name in (("pie_menus", "Pie Menu Creator"),
                           ("channel_blending", "All-Channel Blending"),
                           ("font_tool", "Font Tool"),
-                          ("anchor_manager", "Anchor Manager"),
-                          ("layer_graph", "Layer Graph (Prototype)")):
+                          ("anchor_manager", "Anchor Manager (Prototype)"),
+                          ("layer_graph", "Layer Graph (Prototype)"),
+                          ("layer_search", "Native Layers Search")):
+            if fid not in FEATURES:
+                continue
             check = QtWidgets.QCheckBox(name)
             check.setChecked(app.settings.enabled(fid))
             check.toggled.connect(lambda enabled, id=fid: self.switch(id, enabled))

@@ -39,17 +39,56 @@ Copy **`painter_python/plugins/MBToolkit_3DPainter/`** (the folder containing `_
 
 ## Included features
 
+### Native Layers search
+
+**Native Layers Search** is enabled by default (toggle it in **MBToolkit → Preferences**).
+On compatible native Layers docks, a thin search bar appears at the top. It filters
+layer and folder names as you type, ignoring case. Matching layers retain their
+parent folders; matching layers/folders include all their children. Nonmatching
+siblings stay hidden unless their parent itself matches. Clear the search to restore
+the list and previous folder expansion state. Filtering never changes layer visibility
+or rendering, and unloading the feature restores the view.
+Effect names do not produce matches in Painter's native widget list; effects remain
+visible when included as children of a matching layer or folder.
+
+This is a guarded, host-dependent Qt integration supporting Painter's native
+`Alg::LayersStackView` nested widget list, plus compatible single-tree layouts.
+Unsupported layouts (including non-widget/QML trees) are left untouched.
+The widget-list adapter was checked in running Painter with a populated stack:
+the bar attached, nested folder filtering worked, clearing restored row/disclosure
+state, and layer names/visibility/order and selection were unchanged. Native row
+changes are refreshed while searching on the next one-second polling tick.
+Typing reuses a widget index, computes inclusion in linear passes over the rows,
+and batches redraws; native disclosure controls are expanded before the final
+visibility pass so expansion cannot reveal nonmatching siblings.
+
 | Tool | Current behavior | Status |
 |---|---|---|
 | Pie Menu Creator | Multiple radial pies, equal-angle clickable slices, mouse selection, per-menu shortcuts, command catalog, menu editor, opt-in trusted `.py` scripts | Implemented, host testing pending |
 | Channel Blending | Dockable per-channel blend mode + opacity controls; follows selected paint/fill layer | Implemented, host testing pending |
 | Font Tool | Paint-first Fit / Refit, editable live text masks, relative sizing, rotation/mirroring, and text stencil generation | Full implementation working and tested (user-confirmed); automated regressions included |
-| Anchor Manager | Optional searchable anchor library, per-input dependency graph, coverage-aware inspector, navigation and restricted safe editing | Local fake-host/offscreen Qt tested; Painter smoke testing pending |
-| Layer Graph | Optional node-first layer editing prototype: searchable creation, mask/effect subgraphs, group tabs, collapsible visual frames and channel inspector | Experimental; public-API double/offscreen Qt checks; live Painter acceptance pending |
+
+### Development-only prototypes (not shipped)
+
+**Anchor Manager and Layer Graph are prototypes, not included features of installable builds.**
+Their source and tests remain in repository clones/local checkouts for continued development.
+Both are off by default and appear in Preferences, menus and the command catalog only when
+their source packages are present. They are omitted from the CI installable ZIP and Git-generated
+source archives, along with their dedicated guides and prototype-specific tests/scripts.
+Use a Git clone rather than a source archive to work on these prototypes. Copying the runtime
+directly from a clone also includes them; use the release builder for a prototype-free installation.
+
+The release builder always excludes both prototypes:
+
+```powershell
+py -3.11 scripts/build_release.py dist/MBToolkit_3DPainter.zip
+```
+
+Repository CI still runs the prototype tests; excluding code from distribution does not disable testing.
 
 ### Layer Graph prototype
 
-Enable **Layer Graph (Prototype)** in MBToolkit Preferences, then open it from the MBToolkit menu.
+In a repository clone only, enable **Layer Graph (Prototype)** in MBToolkit Preferences, then open it from the MBToolkit menu.
 Right-click / Tab to add nodes, double-click groups to open focused tabs, and use separate mask/content
 effect graphs to keep materials organized. Painter remains the rendering backend; wires reflect native
 composition order rather than unrestricted Designer-style dataflow. Layout is session-only and arbitrary
@@ -72,9 +111,9 @@ node families, limitations and the host acceptance checklist.
 
 Settings are stored outside the installation in the OS-specific Painter user configuration directory (via Qt `QStandardPaths`). Use Preferences to export or import portable JSON.
 
-### Anchor Manager
+### Anchor Manager prototype (development checkout only)
 
-Enable **Preferences → Features → Anchor Manager** (off by default), then open **MBToolkit → Anchor Manager**.
+In a repository clone only, enable **Preferences → Features → Anchor Manager (Prototype)** (off by default), then open **MBToolkit → Anchor Manager (Prototype)**.
 Browse the active texture set, search anchors, inspect known consumers, and double-click to navigate in Painter.
 Create/rename and restricted fill-reference replacement use previews/revalidation; deletion requires a complete zero-use scan.
 Partial coverage is intentional for unverified input categories: **0 known is not unused**.

@@ -1,4 +1,5 @@
 """Application assembly and single-owner lifecycle."""
+from importlib import import_module
 from PySide6 import QtWidgets
 import substance_painter as sp
 from .metadata import DISPLAY_NAME, VERSION, MAINTAINER, MIN_PAINTER
@@ -6,6 +7,7 @@ from .core.settings import Settings
 from .core.commands import Commands
 from .core.events import EventBus
 from .core.feature import DockFeature
+from .core.availability import PROTOTYPES, available_prototypes
 from .adapters.painter import compatible, create_layer, add_mask, add_mask_fill, selected_owning_layer
 from .core.macros import MacroRunner
 from .adapters.native_actions import NativeActions
@@ -14,8 +16,7 @@ from .ui.preferences import Preferences
 from .features.pie_menus.feature import Feature as PieFeature
 from .features.channel_blending.panel import Panel as BlendPanel
 from .features.font_tool.panel import Panel as FontPanel
-from .features.anchor_manager.feature import Feature as AnchorFeature
-from .features.layer_graph.feature import Feature as LayerGraphFeature
+from .features.layer_search.feature import Feature as LayerSearchFeature
 
 
 class Blending(DockFeature):
@@ -54,8 +55,10 @@ class Toolkit:
         self.commands.native_provider = NativeActions(self.main_window)
         self.events.start()
         self.features = {"pie_menus": PieFeature(self), "channel_blending": Blending(self),
-                         "font_tool": Fonts(self), "anchor_manager": AnchorFeature(self),
-                         "layer_graph": LayerGraphFeature(self)}
+                         "font_tool": Fonts(self), "layer_search": LayerSearchFeature(self)}
+        for fid in available_prototypes():
+            module = import_module(f".features.{fid}.feature", __package__)
+            self.features[fid] = module.Feature(self)
         self._register_commands()
         self._create_menu()
         self.reconcile_features()
@@ -66,8 +69,6 @@ class Toolkit:
             ("mb.pies.edit", "Manage Pie Menus", self.open_pie_editor),
             ("mb.blending", "Open Channel Blending", lambda: self.show_feature("channel_blending")),
             ("mb.fonts", "Open Font Tool", lambda: self.show_feature("font_tool")),
-            ("mb.anchors", "Open Anchor Manager", lambda: self.show_feature("anchor_manager")),
-            ("mb.layer_graph", "Open Layer Graph", lambda: self.show_feature("layer_graph")),
             ("painter.add_fill", "Painter: Add Fill Layer", lambda: create_layer("fill")),
             ("painter.add_paint", "Painter: Add Paint Layer", self._add_paint),
             ("painter.add_group", "Painter: Add Folder", self._add_group),
@@ -76,6 +77,9 @@ class Toolkit:
             ("painter.mask_fill", "Painter: Add Fill to Mask", lambda: add_mask_fill(selected_owning_layer())),
         ):
             self.commands.register(id, label, fn)
+        for fid, (label, command) in PROTOTYPES.items():
+            if fid in self.features:
+                self.commands.register(command, "Open " + label, lambda id=fid: self.show_feature(id))
         self.commands.macro_runner = MacroRunner({
             "painter.add_fill": lambda target: create_layer("fill", select=False, above=target),
             "painter.add_paint": lambda target: create_layer("paint", select=False, above=target),
@@ -113,8 +117,9 @@ class Toolkit:
         pie.aboutToShow.connect(lambda: self._populate_pie_menu(pie))
         self._action(self.menu, "Channel Blending", lambda: self.show_feature("channel_blending"), "channel_blending")
         self._action(self.menu, "Font Tool", lambda: self.show_feature("font_tool"), "font_tool")
-        self._action(self.menu, "Anchor Manager", lambda: self.show_feature("anchor_manager"), "anchor_manager")
-        self._action(self.menu, "Layer Graph (Prototype)", lambda: self.show_feature("layer_graph"), "layer_graph")
+        for fid, (label, _command) in PROTOTYPES.items():
+            if fid in self.features:
+                self._action(self.menu, label, lambda id=fid: self.show_feature(id), fid)
         self.menu.addSeparator()
         self._action(self.menu, "Preferences", self.open_preferences)
         self._action(self.menu, "About", self.about)

@@ -1,11 +1,14 @@
 from MBToolkit_3DPainter.core.models import clean_config, default_settings, normalized_angle_index
+from MBToolkit_3DPainter.core.availability import available_prototypes
 import pytest
 
 
 def test_default_features():
     config = default_settings()
-    assert set(config["features"]) == {"pie_menus", "channel_blending", "font_tool", "anchor_manager", "layer_graph"}
-    assert config["features"]["layer_graph"]["enabled"] is False
+    assert set(config["features"]) == {"pie_menus", "channel_blending", "font_tool", "layer_search"} | set(available_prototypes())
+    assert config["features"]["layer_search"]["enabled"] is True
+    for fid in available_prototypes():
+        assert config["features"][fid]["enabled"] is False
     assert "mb.performance" not in config["pie_menus"][0]["actions"]
     assert config["schema_version"] == 2
 
@@ -17,6 +20,7 @@ def test_validation_migration_and_restrictions():
                         {"id": "good", "actions": []}]}
     cfg = clean_config(old)
     assert cfg["features"]["font_tool"]["enabled"] is False
+    assert cfg["features"]["layer_search"]["enabled"] is True
     assert len(cfg["pie_menus"]) == 1
     assert len(cfg["pie_menus"][0]["actions"]) == 12
     assert cfg["allow_custom_python"] is False

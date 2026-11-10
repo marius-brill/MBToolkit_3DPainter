@@ -25,7 +25,8 @@ sys.modules[spec.name] = plugin
 spec.loader.exec_module(plugin)
 assert plugin.__version__ == "0.1.0"
 from MBToolkit_3DPainter.core.models import default_settings
-assert set(default_settings()["features"]) == {"pie_menus", "channel_blending", "font_tool", "anchor_manager", "layer_graph"}
+from MBToolkit_3DPainter.core.availability import available_prototypes
+assert set(default_settings()["features"]) == {"pie_menus", "channel_blending", "font_tool", "layer_search"} | set(available_prototypes())
 
 calls = []
 class Toolkit:

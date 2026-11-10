@@ -1,0 +1,21 @@
+# Keep prototypes in clones/checkouts, but not Git-generated source archives.
+/painter_python/plugins/MBToolkit_3DPainter/features/anchor_manager export-ignore
+/painter_python/plugins/MBToolkit_3DPainter/features/layer_graph export-ignore
+/docs/ANCHOR_MANAGER.md export-ignore
+/docs/LAYER_GRAPH.md export-ignore
+/docs/REORDER_INVESTIGATION.md export-ignore
+/MBToolkit_Anchor_Manager_Implementation_Spec.md export-ignore
+/tests/anchor_fixtures.py export-ignore
+/tests/layer_graph_fixtures.py export-ignore
+/tests/test_anchor_manager.py export-ignore
+/tests/test_anchor_ui.py export-ignore
+/tests/test_layer_graph.py export-ignore
+/tests/test_layer_graph_ui.py export-ignore
+/tests/test_connection_ordering.py export-ignore
+/tests/test_layer_ordering.py export-ignore
+/tests/test_native_effect_order.py export-ignore
+/scripts/painter_graph_reorder_test.py export-ignore
+/scripts/painter_command_reorder_test.py export-ignore
+/scripts/painter_general_order_test.py export-ignore
+/scripts/painter_reorder_acceptance.py export-ignore
+/scripts/painter_reorder_probe.py export-ignore
